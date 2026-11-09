@@ -91,15 +91,25 @@ The monorepo has to be built first, both faces:
 
 ```sh
 ./node_modules/.bin/tsc -b tsconfig.host.json
-./node_modules/.bin/tsdown --config-loader tsx --env.DSH_BUILD_FACE host
+./node_modules/.bin/tsdown --env.DSH_BUILD_FACE host
 ./node_modules/.bin/tsc -b tsconfig.client.json
-./node_modules/.bin/tsdown --config-loader tsx --env.DSH_BUILD_FACE client
+./node_modules/.bin/tsdown --env.DSH_BUILD_FACE client
 ```
 
-`--config-loader tsx` is not optional: tsdown 0.22's default config loader is
-`unrun`, which nothing in the lockfile installs, so `npm run build:lib:host`
-fails before compiling anything. Both faces are needed because `dsh-base`
-mounts `dsh-api-gateway`, whose `lib/index.js` is emitted by the client face.
+Both faces are needed because `dsh-base` mounts `dsh-api-gateway`, whose
+`lib/index.js` is emitted by the client face.
+
+For a mind container, build the tree with the repository's `Dockerfile`
+instead: it runs the install and both faces on the mind image's base, so the
+native modules (sharp, node-pty, koffi) match the container's glibc, and it
+writes the tree to a host folder owned by the user running the command:
+
+```sh
+docker build --target tree --output type=local,dest="$HIVE_HOME/dsh" .
+```
+
+Mount that folder read-only at `/opt/dsh`; the launcher is
+`/opt/dsh/apps/cli/lib/bin.js`.
 
 What it shows, on `qwen35-131k` through the proxy:
 
