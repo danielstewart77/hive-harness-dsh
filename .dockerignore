@@ -1,0 +1,9 @@
+# The image builds from tracked source only. Every path below is an install or
+# build output (none is tracked), and copying a host's copy in would ship
+# native modules compiled for the host's libc and the host's stale lib/.
+**/node_modules
+**/lib
+**/*.tsbuildinfo
+**/coverage
+**/dist
+.git
