@@ -112,13 +112,13 @@ lefthook 在 `lefthook.yml` 中配置，作为快速的本地检查点：
 
 vendor manifest 守卫检查 `vendor/*/src` 下的改动是否连同对应的 `vendor/README.md` manifest 更新一起暂存。请在编辑 vendor 代码前先阅读 `vendor/README.md`。
 
-除限定范围的暂存记录校验外，这些钩子有意不运行测试、快照、文档检查、构建或 `hygiene`。贡献者只运行一次[与改动行为相关的检查](../AGENTS.md#run-relevant-checks-locally)；CI 负责全量覆盖率门禁、构建产物冒烟测试，以及 Node 22.19、24 和 26 兼容性矩阵。
+除限定范围的暂存记录校验外，这些钩子有意不运行测试、快照、文档检查、构建或 `hygiene`。贡献者只运行一次[与改动行为相关的检查](../AGENTS.md#run-relevant-checks-locally)。由于没有托管 CI，全量覆盖率、构建产物冒烟测试以及任何多版本 Node 检查都需要主动在本地运行 `pnpm run check:all`——事后不会再有任何环节捕获这些问题。
 
 贡献者可以选择运行 `pnpm run check:all`，执行全面的本地门禁集。该命令独立于 Git 钩子，也不是对 agent 的指令。
 
 ### CI 门禁
 
-keyless [CI 工作流](../.github/workflows/ci.yml) 将独立门禁分组到若干宽粒度 lane，并在受支持的 Node 版本上运行一组较小的兼容性检查。产物消费方在各自 lane 内等待一次 build。单独的真实 API 工作流按其配置的 worker 上限运行 `pnpm run test:e2e`。当前门禁和 job 清单以 [scripts/run-gates.ts](../scripts/run-gates.ts) 和工作流文件为准。
+本仓库没有托管 CI。GitHub Actions 已在本仓库禁用，工作流定义也已删除，因此所有门禁都在本地运行。门禁清单由 [scripts/run-gates.ts](../scripts/run-gates.ts) 负责，它将独立门禁分组到若干 lane；可用 `pnpm run check:all` 运行全量门禁集，或只选择覆盖变更表面的最小 lane。真实 API 的 e2e 为 `pnpm run test:e2e`，未设置 `DEEPSEEK_API_KEY` 时会自动跳过。
 
 ### 日常命令
 

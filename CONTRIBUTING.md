@@ -1,23 +1,39 @@
 # Contributing
 
-English | [中文](CONTRIBUTING.zh.md)
+`dsh` is maintained independently by the owner of this repository. It descends
+from DeepSeek's MIT-licensed `deepseek-harness` developer preview and has no
+upstream — see [Provenance](README.md#provenance).
 
-Thank you for your interest in contributing to DeepSeek Harness!
+## Reporting issues
 
-We deeply believe in the power of open source communities, and that belief has shaped this project from the very beginning.
+Open them on
+[this repository's issue tracker](https://github.com/danielstewart77/hive-harness-dsh/issues).
+Do not report them to DeepSeek: their tracker and discussions cover a different
+codebase, and the two have diverged.
 
-DeepSeek Harness is still at an early stage and under active development. We are sorry that we cannot accept external pull requests at the moment. However, contributing code to this repository is far from the only way to help. There are many other ways to get involved:
+## Pull requests
 
-- Identify and report issues or bugs in GitHub Discussions:
-  - Upvote discussions that you would like to bring to the team's attention. We are a very small team and may not be able to reply to every post, but we monitor them and consider them when allocating resources.
-- Contribute to the ecosystem:
-  - Create a plugin that excites you and share it with others:
-    - Associate your GitHub project with the `dsh-plugin` topic to help others discover your plugin.
-  - Write blog posts and how-to guides about DeepSeek Harness.
-  - Answer questions and help other members of the community.
+This repository is pre-release and has no external consumers, so the stance is
+foundation over blast radius: rename or repackage freely and update every
+reference in the same change. On-disk formats carry no compatibility promise.
 
-DeepSeek Harness is designed to be deeply customizable. We do not believe that packages in the official repository are inherently more important than packages created by the community. You may consider this repository an idea, an official showcase, and a source of inspiration, but not a mandate from us.
+Before changing anything under `packages/`, read
+[docs/architecture.md](docs/architecture.md). Before touching the hive
+integration under `hive/`, read
+[hive/dsh-headless-resumable/README.md](hive/dsh-headless-resumable/README.md) —
+the conversation-id invariant it documents is the reason that surface exists,
+and breaking it breaks every mind built on this harness.
 
-We have already seen exciting projects emerge from the community, and we hope to see the ecosystem continue to grow in its own directions.
+Tests land with code changes.
 
-Into the unknown.
+```sh
+pnpm install
+pnpm run build
+pnpm vitest
+```
+
+## Continuous integration
+
+There is none, by choice. GitHub Actions is disabled on this repository and the
+workflow definitions have been removed. Validation is local: run the build and
+the test suites above before pushing.
