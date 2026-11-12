@@ -68,6 +68,21 @@
   config:
     mode: !!js process.env.DSH_TOOLS_MODE
 
+# The shell the model runs commands through is handed the whole environment the
+# mind spawned this turn with, credentials included, exactly as the hooks are.
+# Every child of the harness starts with KEY/TOKEN/SECRET names scrubbed, and a
+# mind's own commands authenticate to memory, the gateway and the tools service
+# with exactly such names. A patch replaces a row's whole config, so the base
+# row's timeout is restated here.
+- id: bash-sandbox
+  config:
+    timeoutMs: 60000
+    env: !!js ({ ...process.env })
+
+- id: pwsh-sandbox
+  config:
+    env: !!js ({ ...process.env })
+
 # Never compacts on its own. The hive rotates a conversation that has outgrown
 # its model onto a fresh one carrying a summary, and decides when from the size
 # every turn reports; a harness that quietly shrank the conversation underneath

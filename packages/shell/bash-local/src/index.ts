@@ -11,7 +11,7 @@
 
 import { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { SHELL_SETTINGS_NAMESPACE, ShellExecutor } from '@deepseek-ai/dsh-shell'
+import { DSH_ENV_PREFIX, SHELL_SETTINGS_NAMESPACE, ShellExecutor } from '@deepseek-ai/dsh-shell'
 import type { ShellExecRequest, ShellExecSpec, ShellProcess, ShellProcessRead, ShellRunResult, CollectedOutput } from '@deepseek-ai/dsh-shell'
 import type { SubprocessCollect, SubprocessHandle, SubprocessOutputReader, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { installSettingsSection } from '@deepseek-ai/dsh-settings'
@@ -21,8 +21,9 @@ import { clampTimeout, deadline, MAX_TIMER_DELAY_MS, timeoutOf } from '@deepseek
  * Model-friendly environment overrides: disable colors, pagers, and
  * interactive terminal features that would garble tool output (the same set
  * Codex hardcodes; Claude Code achieves it via TERM=dumb). Bash-tool policy —
- * merged first into the spawn's explicit env, so a trusted caller's own entry
- * still wins; the subprocess service applies its credential scrub independently.
+ * merged over the configured `env` and under the caller's, so a trusted
+ * caller's own entry still wins; the subprocess service applies its credential
+ * scrub independently.
  */
 export const ENV_OVERRIDES = {
   NO_COLOR: '1',
@@ -51,10 +52,47 @@ export interface Config {
   maxSpillBytes?: number
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs?: number
+  /**
+   * Variables every command is handed over the subprocess runtime's scrubbed
+   * base, beneath the terminal overrides and the caller's own entries. Every
+   * child of this harness starts without credential-shaped names
+   * (KEY/TOKEN/SECRET/PASSWORD), so a command that authenticates to anything
+   * has its credential only when this names it. `DSH_*` names are dropped:
+   * managed facts reach a command only through the trusted `dshEnv` snapshot.
+   * Composition-only — it is not part of the `shell` settings section, so a
+   * settings document neither shows nor replaces it.
+   */
+  env?: Record<string, string>
 }
 
-/** The shape after schemastery applied the defaults (cwd has none). */
-type ResolvedConfig = Required<Omit<Config, 'cwd'>> & Pick<Config, 'cwd'>
+/** The `shell` settings section: every field but the composition-only `env`. */
+type SettingsConfig = Omit<Config, 'env'>
+
+/** The section after schemastery applied the defaults (cwd has none). */
+type ResolvedConfig = Required<Omit<SettingsConfig, 'cwd'>> & Pick<SettingsConfig, 'cwd'>
+
+/**
+ * Schema of the registered `shell` settings section: LocalBashExecutor's `Config`
+ * without the composition-only `env`.
+ * @returns a fresh object schema over the same property schemas.
+ */
+function settingsSection(): z<SettingsConfig> {
+  // An object schema always carries its property map; the type leaves it optional.
+  const { dict } = LocalBashExecutor.Config as { dict: Record<string, z> }
+  const { env: _env, ...fields } = dict
+  return z.object(fields)
+}
+
+/**
+ * Keep only the entries of a configured `env` the executor may forward: a
+ * `DSH_*` name (case-insensitive, like the subprocess scrub) is the managed
+ * channel's alone.
+ * @param env - the composition entry's `env` map.
+ * @returns the ordinary entries, in their original order.
+ */
+function ordinaryEnv(env: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(env).filter(([key]) => !key.toUpperCase().startsWith(DSH_ENV_PREFIX)))
+}
 
 /** Project a settled collect-mode reader into the final CollectedOutput shape. */
 function finalOutput(reader: SubprocessOutputReader): CollectedOutput {
@@ -109,10 +147,14 @@ export class LocalBashExecutor extends ShellExecutor {
     maxOutputBytes: z.number().default(64_000),
     maxSpillBytes: z.number().default(DEFAULT_MAX_SPILL_BYTES),
     graceMs: z.number().default(DEFAULT_GRACE_MS),
+    env: z.dict(z.string()).default({}),
   })
 
   /** The currently authoritative config: the settings section, or the composition entry. */
   private source: () => ResolvedConfig
+
+  /** The composition entry's ordinary `env` entries; never sourced from settings. */
+  private readonly env: Readonly<Record<string, string>>
 
   /** Validated config (schemastery applied the defaults before construction). */
   get config(): ResolvedConfig {
@@ -122,10 +164,12 @@ export class LocalBashExecutor extends ShellExecutor {
   constructor(ctx: Context, config: Config) {
     super(ctx)
     // Schemastery fills these fields before construction; the type does not encode that step.
-    const entry = config as ResolvedConfig
+    const { env, ...section } = config as ResolvedConfig & Required<Pick<Config, 'env'>>
+    const entry: ResolvedConfig = section
     assertServiceableBashConfig(entry)
+    this.env = ordinaryEnv(env)
     this.source = () => entry
-    installSettingsSection(ctx, SHELL_SETTINGS_NAMESPACE, LocalBashExecutor.Config, entry, {
+    installSettingsSection(ctx, SHELL_SETTINGS_NAMESPACE, settingsSection(), entry, {
       validate: assertServiceableBashConfig,
       setSource: (current) => {
         this.source = current as () => ResolvedConfig
@@ -191,9 +235,10 @@ export class LocalBashExecutor extends ShellExecutor {
       graceMs: this.config.graceMs,
       signal,
       // One explicit env map for the seam, layered so the trusted dshEnv
-      // snapshot beats both the caller's env and the terminal overrides; the
-      // subprocess service merges the whole map after its ambient scrub.
-      env: { ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv },
+      // snapshot beats the caller's env, which beats the terminal overrides,
+      // which beat the configured env; the subprocess service merges the whole
+      // map after its ambient scrub.
+      env: { ...this.env, ...ENV_OVERRIDES, ...spec.env, ...spec.dshEnv },
     }
   }
 

@@ -103,6 +103,16 @@ describe('bash settings section', () => {
     await ctx.fiber.dispose()
   })
 
+  it('keeps the configured env out of the settings section a surface describes', async () => {
+    const bench = await boot({ env: { MY_API_TOKEN: 'credential' } })
+
+    const shell = bench.ctx.settings.describe().find(row => String(row.ns) === 'shell')
+
+    expect(JSON.stringify(shell)).not.toContain('credential')
+    expect(JSON.stringify(shell?.schema)).not.toContain('"env"')
+    await bench.ctx.fiber.dispose()
+  })
+
   it('releases the namespace when the executor unloads', async () => {
     const bench = await boot()
     expect(bench.ctx.settings.describe().map(row => String(row.ns))).toContain('shell')

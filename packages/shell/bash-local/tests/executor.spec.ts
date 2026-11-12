@@ -149,6 +149,17 @@ describe('LocalBashExecutor.run', () => {
     expect(result.stdout.text).toBe('piped\n[env-ok][dsh-ok]\n')
   })
 
+  it('hands the configured env beneath the terminal overrides, without its DSH_* names', async () => {
+    const { bash } = await setup({ env: {
+      PLAIN_VAR: 'configured', CALLER_VAR: 'configured', TERM: 'xterm-256color', DSH_LEAK: 'ambient', dsh_lower: 'ambient',
+    } })
+    const result = await bash.run(bash.resolve({
+      command: 'echo "[$PLAIN_VAR][$CALLER_VAR][$TERM][$DSH_LEAK][$dsh_lower]"',
+      env: { CALLER_VAR: 'caller' },
+    }))
+    expect(result.stdout.text).toBe('[configured][caller][dumb][][]\n')
+  })
+
   it('resolve() omits stdin/env/dshEnv when the request supplies none', async () => {
     const { bash } = await setup()
     const spec = bash.resolve({ command: 'true' })

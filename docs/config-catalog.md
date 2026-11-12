@@ -361,10 +361,21 @@ export interface Config {
   maxSpillBytes?: number
   /** Grace period for kill escalation and inherited pipes; at most `MAX_TIMER_DELAY_MS`. */
   graceMs?: number
+  /**
+   * Variables every command is handed over the subprocess runtime's scrubbed
+   * base, beneath the terminal overrides and the caller's own entries. Every
+   * child of this harness starts without credential-shaped names
+   * (KEY/TOKEN/SECRET/PASSWORD), so a command that authenticates to anything
+   * has its credential only when this names it. `DSH_*` names are dropped:
+   * managed facts reach a command only through the trusted `dshEnv` snapshot.
+   * Composition-only — it is not part of the `shell` settings section, so a
+   * settings document neither shows nor replaces it.
+   */
+  env?: Record<string, string>
 }
 ```
 
-Source: [`packages/shell/bash-local/src/index.ts:41`](../packages/shell/bash-local/src/index.ts)
+Source: [`packages/shell/bash-local/src/index.ts:42`](../packages/shell/bash-local/src/index.ts)
 
 <a id="deepseek-aidsh-bash-sandbox"></a>
 
@@ -1408,10 +1419,21 @@ export interface Config {
    * PowerShell 5.1), falling back to a bare `pwsh` resolved through PATH.
    */
   pwshPath?: string
+  /**
+   * Variables every command is handed over the subprocess runtime's scrubbed
+   * base, beneath the terminal overrides and the caller's own entries. Every
+   * child of this harness starts without credential-shaped names
+   * (KEY/TOKEN/SECRET/PASSWORD), so a command that authenticates to anything
+   * has its credential only when this names it. `DSH_*` names are dropped:
+   * managed facts reach a command only through the trusted `dshEnv` snapshot.
+   * Composition-only — it is not part of the `shell` settings section, so a
+   * settings document neither shows nor replaces it.
+   */
+  env?: Record<string, string>
 }
 ```
 
-Source: [`packages/shell/pwsh-local/src/index.ts:58`](../packages/shell/pwsh-local/src/index.ts)
+Source: [`packages/shell/pwsh-local/src/index.ts:60`](../packages/shell/pwsh-local/src/index.ts)
 
 <a id="deepseek-aidsh-pwsh-sandbox"></a>
 
