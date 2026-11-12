@@ -187,6 +187,16 @@ describe('spawn construction (pure, every platform)', () => {
     expect(ENCODING_PREAMBLE).toContain('[Console]::OutputEncoding')
     expect(ENCODING_PREAMBLE).toContain('$OutputEncoding')
   })
+
+  it('hands the configured env beneath the terminal overrides, without its DSH_* names', async () => {
+    const ctx = new Context()
+    const subprocess = new CapturingSubprocessRuntime(ctx)
+    await ctx.plugin(PwshLocalExecutor, { env: { PLAIN_VAR: 'configured', NO_COLOR: '0', DSH_LEAK: 'ambient', dsh_lower: 'ambient' } })
+    await ctx.shell.run(ctx.shell.resolve({ command: 'Write-Output hi' }))
+    const { env } = subprocess.specs[0]!
+    expect(env).toMatchObject({ PLAIN_VAR: 'configured', NO_COLOR: '1' })
+    expect(Object.keys(env ?? {}).filter(key => key.toUpperCase().startsWith('DSH_'))).toEqual([])
+  })
 })
 
 describe.skipIf(!hasPwsh)('PwshLocalExecutor.run', () => {

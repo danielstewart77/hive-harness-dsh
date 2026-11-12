@@ -73,6 +73,21 @@
 # every turn reports; a harness that quietly shrank the conversation underneath
 # would make that size a figure about a conversation nobody is having. A turn
 # that hits the ceiling anyway fails as an overflow, and the hive rotates on it.
+# The shell the model runs commands through is handed the whole environment the
+# mind spawned this turn with, credentials included, exactly as the hooks are.
+# Every child of the harness starts with KEY/TOKEN/SECRET names scrubbed, and a
+# mind's own commands authenticate to memory, the gateway and the tools service
+# with exactly such names. A patch replaces a row's whole config, so the base
+# row's timeout is restated here.
+- id: bash-sandbox
+  config:
+    timeoutMs: 60000
+    env: !!js ({ ...process.env })
+
+- id: pwsh-sandbox
+  config:
+    env: !!js ({ ...process.env })
+
 - id: compaction-basic
   config:
     auto: false
