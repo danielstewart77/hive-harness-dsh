@@ -335,6 +335,43 @@ export function reportDelta(io: Pick<RunnerIo, 'stdout'>, delta: StreamDelta): v
   io.stdout.write(JSON.stringify({ delta }) + '\n')
 }
 
+/**
+ * The prose of a completed assistant message, or undefined for anything else.
+ *
+ * Deltas are what a terminal wants and whole messages are what a chat surface
+ * wants: a gateway relaying a turn to Telegram or Discord sends messages, not
+ * tokens, and it has no way to tell from a stream of deltas where one message
+ * ended and the next began. Without this line the only message boundary on
+ * stdout is the turn report, so a mind that speaks, works, and speaks again
+ * reaches its reader as one block when the turn is over.
+ * @param event - a session event.
+ * @returns the message's text, or undefined when it has none.
+ */
+export function streamMessage(event: SessionEvent): string | undefined {
+  if (event.type !== 'assistant/message') return undefined
+  const joined = event.data.message.content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('')
+  // A content-less finish is a durable event with no prose in it. Reporting
+  // it would have the surface deliver an empty message.
+  return joined === '' ? undefined : joined
+}
+
+/**
+ * One line of stdout per completed assistant message.
+ *
+ * Carries neither `sessionId` nor `progress` nor `delta`, for the reason
+ * `reportDelta` gives: those three identify the turn report, a round's
+ * progress and a fragment, and a message mistaken for one of them would end
+ * the turn early, inflate the round count, or be rendered as a token.
+ * @param io - process-facing effects.
+ * @param text - the completed message's prose.
+ */
+export function reportMessage(io: Pick<RunnerIo, 'stdout'>, text: string): void {
+  io.stdout.write(JSON.stringify({ message: text }) + '\n')
+}
+
 /** Write one report and request the matching exit. A completed turn is the only zero. */
 export function report(io: RunnerIo, turn: TurnReport): void {
   io.stdout.write(JSON.stringify(turn) + '\n')
@@ -462,7 +499,12 @@ export async function run(
     // interleaved with the mind's and attributed to it.
     if (session.id !== agent.session.id) return
     const delta = streamDelta(event)
-    if (delta !== undefined) reportDelta(io, delta)
+    if (delta !== undefined) {
+      reportDelta(io, delta)
+      return
+    }
+    const message = streamMessage(event)
+    if (message !== undefined) reportMessage(io, message)
   })
   // A Stop hook asking for rotation ends the goal run after the round it closed.
   // Disarmed the moment the request is recorded — inside the turn, before it
