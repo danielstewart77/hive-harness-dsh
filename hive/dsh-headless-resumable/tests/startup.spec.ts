@@ -31,6 +31,30 @@ describe('resolving an invocation', () => {
     expect(() => resolveInvocation(['   '], { resume: 'conv-1' })).toThrow(UsageError)
   })
 
+  it('opens a resident conversation carrying no task, since turns arrive later', () => {
+    expect(resolveInvocation([], { resume: 'conv-1', resident: true }))
+      .toEqual({ resident: true, sessionId: 'conv-1', mode: 'resume' })
+  })
+
+  it('refuses a process told to read both a terminal and a pipe', () => {
+    // One would answer the first line twice, or neither.
+    expect(() => resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, resident: true,
+    })).toThrow(UsageError)
+  })
+
+  it('refuses a resident invocation that also names a task', () => {
+    expect(() => resolveInvocation(['build it'], {
+      sessionId: 'conv-1', resident: true,
+    })).toThrow(UsageError)
+  })
+
+  it('refuses goal rounds in a resident process, which belong to one shot', () => {
+    expect(() => resolveInvocation([], {
+      sessionId: 'conv-1', resident: true, goalRounds: '4',
+    })).toThrow(UsageError)
+  })
+
   it('opens an interactive conversation without inventing an opening turn', () => {
     expect(resolveInvocation([], {
       sessionId: 'conv-1', interactive: true, contextFile: '/tmp/context.txt',

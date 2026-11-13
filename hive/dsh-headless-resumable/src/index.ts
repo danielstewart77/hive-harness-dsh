@@ -29,18 +29,23 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-/** dsh's own reason for a turn ending, whatever kinds it currently carries. */
-type TurnEndReason = SessionEvent<'turn/end'>['data']['reason']
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 // Type-only: the `hook/result` event a Stop hook's rotation request rides on.
 import type {} from '@deepseek-ai/dsh-hook-protocol'
 
 import { escalatorFromEnv, harnessRefusal } from './escalate.ts'
+import { summarize } from './turn.ts'
+import type { StreamDelta, TurnReport } from './turn.ts'
+// Re-exported because the adapter and these tests have always imported the
+// report from here; moving the declaration must not move its import path.
+export type { StreamDelta, TurnEndReason, TurnReport } from './turn.ts'
+export { summarize } from './turn.ts'
 import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
-import type { FailedCall, ToolTraffic } from './traffic.ts'
+import type { FailedCall } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
 import { runInteractive, terminalIo } from './interactive.ts'
+import { runResident, stdioIo } from './resident.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'resumable-headless-runner'
@@ -67,6 +72,8 @@ export interface Config {
   sessionId: string
   mode: SessionMode
   interactive?: boolean
+  /** Hold the conversation open and read turns as JSON lines on stdin. */
+  resident?: boolean
   initialContext?: string
   contextAsTurn?: boolean
   /** Round cap when this dispatch wants the task driven as a goal. */
@@ -92,6 +99,7 @@ export const Config: z<Config> = z.object({
   sessionId: z.string().required(),
   mode: z.union(['create', 'resume'] as const).required(),
   interactive: z.boolean(),
+  resident: z.boolean(),
   initialContext: z.string(),
   contextAsTurn: z.boolean(),
   goalRounds: z.number(),
@@ -99,55 +107,7 @@ export const Config: z<Config> = z.object({
   stopOnFailedCall: z.boolean(),
 })
 
-/** What the adapter reads off stdout: one line of JSON, whatever happened. */
-export interface TurnReport {
-  /** The conversation this turn ran in — the id we were handed, never a fresh one. */
-  sessionId: string
-  /** Whether this process opened the conversation or continued it. */
-  mode: SessionMode
-  /**
-   * How the turn ended: dsh's own turn-end reason kind, or `refused` for an
-   * invocation that never reached a model. Taken from their type rather than
-   * spelled out here, because the set is theirs to extend -- and `max-tokens`
-   * in particular is the context ceiling, which is a measurement this loop
-   * wants recorded rather than a failure to explain away. `unknown` is an
-   * interval holding no turn at all. `rotation_needed` is a goal run that a
-   * Stop hook ended because the conversation has outgrown its model: the
-   * rounds it did are done, and `goal` says what is left to carry onto a fresh
-   * conversation.
-   */
-  outcome: TurnEndReason['kind'] | 'refused' | 'rotation_needed' | 'unknown'
-  /** The last non-empty assistant text of this turn's interval. */
-  text: string
-  /** The tool traffic of this turn's interval. */
-  traffic: ToolTraffic
-  /**
-   * How many model turns this process actually drove. One unless the dispatch
-   * asked for goal rounds. Reported because a build that stopped at round two
-   * of forty and one that burned all forty are different failures, and the
-   * traffic tally alone cannot tell them apart.
-   */
-  turns: number
-  /** The goal's durable phase when the process finished, when a goal was armed. */
-  goalPhase?: string
-  /**
-   * What a run ended for rotation still owes: the objective to re-dispatch and
-   * how many of the rounds it was paying for it never started. Present only
-   * with `outcome: rotation_needed`.
-   */
-  goal?: { objective: string; roundsLeft: number }
-  /** Present when something refused or failed: the code and message. */
-  error?: { code: string; message: string }
-}
 
-/**
- * One piece of assistant output as it is produced: prose, or the model's own
- * reasoning when the provider sends it as readable text.
- */
-export interface StreamDelta {
-  kind: 'text' | 'reasoning'
-  text: string
-}
 
 /** Process-facing effects: output streams plus the launcher's bounded exit request. */
 interface RunnerIo {
@@ -162,35 +122,6 @@ export const internals: { stdout: RunnerIo['stdout']; stderr: RunnerIo['stderr']
   stderr: process.stderr,
 }
 
-/** The last non-empty assistant text, the turn-end reason, and the turn count. */
-function summarize(events: readonly SessionEvent[], firstSeq: number): {
-  text: string
-  reason: SessionEvent<'turn/end'>['data']['reason'] | undefined
-  turns: number
-} {
-  let started = false
-  let text = ''
-  let turns = 0
-  let reason: SessionEvent<'turn/end'>['data']['reason'] | undefined
-  for (const event of events) {
-    if (event.seq < firstSeq) continue
-    if (event.type === 'turn/start') {
-      started = true
-      turns += 1
-      continue
-    }
-    if (!started) continue
-    if (event.type === 'assistant/message') {
-      const joined = event.data.message.content
-        .filter(block => block.type === 'text')
-        .map(block => block.text)
-        .join('')
-      if (joined !== '') text = joined
-    }
-    if (event.type === 'turn/end') reason = event.data.reason
-  }
-  return { text, reason, turns }
-}
 
 
 /** The slice of `ctx.goals` this runner uses; typed here so tests can stand one in. */
@@ -688,6 +619,14 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   const io: RunnerIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
+  if (config.resident === true) {
+    void runResident(ctx, { sessionId: config.sessionId, mode: config.mode }, stdioIo(exit))
+      .catch((error: unknown) => {
+        internals.stderr.write(`dsh-hive: ${error instanceof Error ? error.message : String(error)}\n`)
+        exit(1)
+      })
+    return
+  }
   if (config.interactive === true) {
     void runInteractive(ctx, {
       sessionId: config.sessionId,
