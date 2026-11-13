@@ -55,6 +55,13 @@ export interface ResumableStartupValues {
   mode: SessionMode
   /** Keep one Agent alive and accept successive prompts from the terminal. */
   interactive?: boolean
+  /**
+   * Keep one Agent alive and accept successive turns as JSON lines on stdin.
+   * The same residency as `interactive`, framed for a parser rather than a
+   * person — and the reason a background child can report after the turn that
+   * sent it has closed.
+   */
+  resident?: boolean
   /** Context queued before the first typed prompt of a fresh conversation. */
   initialContext?: string
   contextAsTurn?: boolean
@@ -100,6 +107,7 @@ export function resumableCommand(): Command {
     .option('--resume <id>', 'continue the conversation already persisted under this id')
     .option('--task-file <path>', 'read the task from this file instead of the positional')
     .option('--interactive', 'keep the conversation open and read prompts from this terminal')
+    .option('--resident', 'keep the conversation open and read turns as JSON lines on stdin')
     .option('--context-file <path>', 'queue this context before an interactive conversation\'s first prompt')
     .option('--context-as-turn', 'answer the --context-file context as the opening turn instead of queueing it')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
@@ -154,6 +162,7 @@ export function resolveInvocation(
     sessionId?: string; resume?: string; taskFile?: string
     goalRounds?: string; goalObjectiveFile?: string; stopOnFailedCall?: boolean
     interactive?: boolean; contextFile?: string; contextAsTurn?: boolean
+    resident?: boolean
   },
   readTask: (path: string) => string = readInputFile,
 ): ResumableStartupValues {
@@ -179,11 +188,22 @@ export function resolveInvocation(
   const created = options.sessionId?.trim() ?? ''
   const resumed = options.resume?.trim() ?? ''
   const interactive = options.interactive === true
-  if (!interactive && task.trim() === '') {
+  const resident = options.resident === true
+  // Both hold one agent open; they differ only in what drives it, and a
+  // process told to read the terminal and a pipe at once would answer the
+  // first line twice or neither.
+  if (interactive && resident) {
+    throw new UsageError('--interactive reads a terminal and --resident reads stdin as JSON; name only one')
+  }
+  const driven = interactive || resident
+  if (!driven && task.trim() === '') {
     throw new UsageError('a task is required, for example: dsh --profile hive --resume abc "fix the chart"')
   }
   if (interactive && task.trim() !== '') {
     throw new UsageError('interactive mode reads prompts from the terminal; do not also name a task')
+  }
+  if (resident && task.trim() !== '') {
+    throw new UsageError('resident mode reads turns from stdin; do not also name a task')
   }
   if (created !== '' && resumed !== '') {
     throw new UsageError('--session-id opens a conversation and --resume continues one; name only one')
@@ -194,6 +214,9 @@ export function resolveInvocation(
   const goalRounds = resolveGoalRounds(options.goalRounds)
   if (interactive && goalRounds !== undefined) {
     throw new UsageError('--goal-rounds belongs to one-shot mode, not --interactive')
+  }
+  if (resident && goalRounds !== undefined) {
+    throw new UsageError('--goal-rounds belongs to one-shot mode, not --resident')
   }
   const contextFile = options.contextFile?.trim() ?? ''
   // The flag alone is a malformed invocation and is refused. A file that is
@@ -234,13 +257,17 @@ export function resolveInvocation(
     }
   }
   const stopping = options.stopOnFailedCall === true ? { stopOnFailedCall: true } : {}
+  // A driven process carries no task: `{ task }` with an empty string is a
+  // one-shot invocation that would refuse for want of one.
   const terminal = interactive
     ? {
       interactive: true as const,
       ...(initialContext === '' ? {} : { initialContext }),
       ...(contextAsTurn && initialContext !== '' ? { contextAsTurn: true } : {}),
     }
-    : { task }
+    : resident
+      ? { resident: true as const }
+      : { task }
   const identity = resumed !== ''
     ? { ...terminal, sessionId: resumed, mode: 'resume' as const, ...stopping }
     : { ...terminal, sessionId: created, mode: 'create' as const, ...stopping }
