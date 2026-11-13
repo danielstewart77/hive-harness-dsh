@@ -9,7 +9,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
 import { SessionId } from '@deepseek-ai/dsh-session'
 
-import { streamDelta } from '../src/index.ts'
+import { streamDelta, streamMessage } from '../src/index.ts'
 import { bench, drivingGoals, stdoutSoFar, streamingTurn } from './support.ts'
 import type { Script } from './support.ts'
 
@@ -69,6 +69,54 @@ describe('a turn written as it happens', () => {
     expect(streamDelta(event('tool/call', {
       turn: 1, step: 1, callId: 'call-1', name: 'write_file', arguments: '{}',
     }))).toBeUndefined()
+  })
+
+  it('writes each completed message, because a chat surface sends messages', async () => {
+    // A gateway relaying this turn to Telegram or Discord has no way to tell
+    // from a stream of deltas where one message ended, so without this line
+    // the only boundary on stdout is the report and a mind that speaks, works
+    // and speaks again arrives as one block after the turn.
+    const seen: string[] = []
+    const observing: Script = (session, message, turn) => {
+      streamingTurn(session, message, turn)
+      seen.push(stdoutSoFar.out)
+    }
+    const test = await bench(observing)
+
+    const { messages, report } = await test.run({
+      task: 'answer me', sessionId: 'conv-messages', mode: 'create',
+    })
+
+    expect(messages).toEqual(['half an answer'])
+    // Written mid-turn, before the report existed.
+    expect(seen[0]).toContain('"message":"half an answer"')
+    expect(seen[0]).not.toContain('sessionId')
+    expect(report.text).toBe('half an answer')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('writes nothing for a message carrying no prose', () => {
+    expect(streamMessage(event('assistant/message', {
+      turn: 1, step: 1,
+      message: { role: 'assistant', content: [] },
+    }))).toBeUndefined()
+    expect(streamMessage(event('assistant/message', {
+      turn: 1, step: 1,
+      message: { role: 'assistant', content: [{ type: 'text', text: '' }] },
+    }))).toBeUndefined()
+    expect(streamMessage(event('assistant/chunk', {
+      turn: 1, step: 1, chunk: { type: 'text-delta', index: 0, text: 'a fragment' },
+    }))).toBeUndefined()
+  })
+
+  it('reports only the prose of a message that also called a tool', () => {
+    expect(streamMessage(event('assistant/message', {
+      turn: 1, step: 1,
+      message: { role: 'assistant', content: [
+        { type: 'text', text: 'dispatched three jobs' },
+        { type: 'tool-call', callId: 'call-1', name: 'subagent', arguments: '{}' },
+      ] },
+    }))).toBe('dispatched three jobs')
   })
 
   it('keeps streaming through every goal round, not only the first', async () => {

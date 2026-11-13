@@ -248,13 +248,17 @@ export async function bench(script: Script = ordinaryTurn): Promise<{
         .map(line => line['progress'] as { round: number; turns: number; toolCalls: number })
       const deltas = written.filter(line => line['delta'] !== undefined)
         .map(line => line['delta'] as { kind: string; text: string })
+      const messages = written.filter(line => line['message'] !== undefined)
+        .map(line => line['message'] as string)
       // The stdout lines in order, so a spec can prove a delta preceded the
       // report rather than merely accompanying it.
       const order = written.map(line => line['delta'] !== undefined
         ? 'delta'
-        : line['progress'] !== undefined ? 'progress' : 'report')
+        : line['message'] !== undefined
+          ? 'message'
+          : line['progress'] !== undefined ? 'progress' : 'report')
       return { code, report: written[written.length - 1] as unknown as TurnReport,
-        progress, deltas, order, err }
+        progress, deltas, messages, order, err }
     },
   }
 }
