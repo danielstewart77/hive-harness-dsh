@@ -41,8 +41,13 @@ import type { StreamDelta, TurnReport } from './turn.ts'
 // report from here; moving the declaration must not move its import path.
 export type { StreamDelta, TurnEndReason, TurnReport } from './turn.ts'
 export { summarize } from './turn.ts'
-import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
-import type { FailedCall } from './traffic.ts'
+import { NO_TRAFFIC, toolTraffic, watchForFailedCall } from './traffic.ts'
+// Re-exported because the watch has always been imported from here, and the
+// resident driver needs it too: a declaration shared by two drivers cannot
+// live in one of them without the other importing its dispatcher.
+export { FAILURE_POLL_MS, watchForFailedCall } from './traffic.ts'
+export type { FailureWatch } from './traffic.ts'
+export type { FailedCall } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
 import { runInteractive, terminalIo } from './interactive.ts'
 import { runResident, stdioIo } from './resident.ts'
@@ -546,65 +551,6 @@ function rotationRequestedBy(event: SessionEvent): boolean {
   return event.type === 'hook/result' && event.data.point === 'Stop' && event.data.rotate === true
 }
 
-/**
- * How often a stopping run re-reads the session for a refusal. The session's
- * event array grows in memory, so this is a walk over a list and not IO.
- */
-export const FAILURE_POLL_MS = 250
-
-/** A watch that resolves the moment a tool call fails, and can be dropped. */
-interface FailureWatch {
-  /**
-   * Resolves with the failure; never resolves while the run stays clean. This is
-   * what cuts a round short, since a round is minutes long and nothing else wakes
-   * up inside one.
-   */
-  readonly settled: Promise<FailedCall>
-  /**
-   * Read the session now rather than waiting for the next poll. A round
-   * boundary is a decision point, and a refusal that landed microseconds
-   * earlier must not buy another round for want of a timer tick.
-   */
-  check(): FailedCall | undefined
-  /** Stop polling, so a finished run leaves no timer behind. */
-  stop(): void
-}
-
-/**
- * Watch one run's own interval for its first failed tool call.
- * @param agent - the live agent, read for its session events.
- * @param firstSeq - the sequence number this run's interval starts at.
- * @returns the watch.
- */
-export function watchForFailedCall(
-  agent: { session: { events: readonly SessionEvent[] } }, firstSeq: number,
-): FailureWatch {
-  let found: FailedCall | undefined
-  let timer: ReturnType<typeof setInterval> | undefined
-  const settled = new Promise<FailedCall>((resolve) => {
-    timer = setInterval(() => {
-      const failure = firstFailedCall(agent.session.events, firstSeq)
-      if (failure === undefined) return
-      found = failure
-      if (timer !== undefined) clearInterval(timer)
-      timer = undefined
-      resolve(failure)
-    }, FAILURE_POLL_MS)
-    // A poll that keeps the process alive would outlive the run it watches.
-    timer.unref?.()
-  })
-  return {
-    settled,
-    check: () => {
-      found ??= firstFailedCall(agent.session.events, firstSeq)
-      return found
-    },
-    stop: () => {
-      if (timer !== undefined) clearInterval(timer)
-      timer = undefined
-    },
-  }
-}
 
 /**
  * Mount the resumable one-shot driver.
@@ -620,7 +566,12 @@ export function apply(ctx: Context, config: Config): void {
   }
   const io: RunnerIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
   if (config.resident === true) {
-    void runResident(ctx, { sessionId: config.sessionId, mode: config.mode }, stdioIo(exit))
+    void runResident(ctx, {
+      sessionId: config.sessionId,
+      mode: config.mode,
+      ...(config.stopOnFailedCall === undefined
+        ? {} : { stopOnFailedCall: config.stopOnFailedCall }),
+    }, stdioIo(exit))
       .catch((error: unknown) => {
         internals.stderr.write(`dsh-hive: ${error instanceof Error ? error.message : String(error)}\n`)
         exit(1)
