@@ -134,6 +134,13 @@
         sessionId: !!js ctx.resumableHeadlessStartup.sessionId
         mode: !!js ctx.resumableHeadlessStartup.mode
         interactive: !!js ctx.resumableHeadlessStartup.interactive
+        # Every field the startup provider can resolve has to be named here:
+        # the plugin is configured by this overlay and reads nothing from the
+        # command line itself, so a flag missing from this list is a flag
+        # parsed, carried and then dropped on the floor. `--resident` was
+        # exactly that until the first live turn refused with "one-shot mode
+        # requires a task".
+        resident: !!js ctx.resumableHeadlessStartup.resident
         initialContext: !!js ctx.resumableHeadlessStartup.initialContext
         contextAsTurn: !!js ctx.resumableHeadlessStartup.contextAsTurn
         goalRounds: !!js ctx.resumableHeadlessStartup.goalRounds
