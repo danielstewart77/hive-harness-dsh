@@ -211,6 +211,79 @@ describe('the resident loop', () => {
     expect(late.map(m => m['message'])).toEqual(['the second delegate came back refused'])
   })
 
+  it('reports a turn whose tool call was refused under the code that says so', async () => {
+    // A mind under test is measured on its tool traffic, and a resident
+    // process that ignored the flag would exempt every chat turn from the
+    // measurement the one-shot dispatch makes.
+    const refusingTurn = (session: never, message: never, turn: number) => {
+      const live = session as unknown as {
+        append(type: string, data: unknown, options?: unknown): void
+      }
+      live.append('turn/start', { turn })
+      live.append('step/start', { turn, step: 1 })
+      live.append('user/message', message, { surfaceOp: 'append' })
+      live.append('tool/call', {
+        turn, step: 1, callId: `call-${turn}`, name: 'str_replace', arguments: '{"old_str":"a"}',
+      })
+      live.append('tool/result', {
+        turn,
+        step: 1,
+        message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
+        error: { name: 'UnknownToolError', code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' },
+      }, { surfaceOp: 'append' })
+      live.append('step/end', { turn, step: 1 })
+      live.append('turn/end', { turn, reason: { kind: 'completed' } })
+    }
+    const harness = await bench(refusingTurn as never)
+    const out = capture()
+    const stdin = pipe()
+    stdin.push('{"id":"t1","turn":"edit the file"}')
+    stdin.end()
+
+    await runResident(
+      harness.ctx,
+      { sessionId: 'conv-resident-refusal', mode: 'create', stopOnFailedCall: true },
+      { ...out.io, lines: stdin.lines } as ResidentIo,
+    )
+
+    const error = reports(out.written)[0]?.['error'] as { code: string; message: string }
+    expect(error.code).toBe('STOPPED_ON_FAILED_CALL')
+    expect(error.message).toContain('str_replace')
+  })
+
+  it('leaves an ordinary turn unwatched, so a refused call is not the end of it', async () => {
+    const refusing = (session: never, message: never, turn: number) => {
+      const live = session as unknown as {
+        append(type: string, data: unknown, options?: unknown): void
+      }
+      live.append('turn/start', { turn })
+      live.append('step/start', { turn, step: 1 })
+      live.append('user/message', message, { surfaceOp: 'append' })
+      live.append('tool/call', {
+        turn, step: 1, callId: `call-${turn}`, name: 'str_replace', arguments: '{}',
+      })
+      live.append('tool/result', {
+        turn,
+        step: 1,
+        message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
+        error: { name: 'UnknownToolError', code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' },
+      }, { surfaceOp: 'append' })
+      live.append('step/end', { turn, step: 1 })
+      live.append('turn/end', { turn, reason: { kind: 'completed' } })
+    }
+    const harness = await bench(refusing as never)
+    const out = capture()
+    const stdin = pipe()
+    stdin.push('{"id":"t1","turn":"edit the file"}')
+    stdin.end()
+
+    await runResident(harness.ctx, { sessionId: 'conv-resident-unwatched', mode: 'create' },
+      { ...out.io, lines: stdin.lines } as ResidentIo)
+
+    expect(reports(out.written)[0]?.['error']).toBeUndefined()
+    expect(reports(out.written)[0]?.['outcome']).toBe('completed')
+  })
+
   it('refuses a malformed line and goes on answering the next turn', async () => {
     const harness = await bench()
     const out = capture()

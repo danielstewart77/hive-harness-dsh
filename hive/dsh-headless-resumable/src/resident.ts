@@ -40,7 +40,7 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 
 import type { SessionMode } from './startup.ts'
-import { toolTraffic, NO_TRAFFIC } from './traffic.ts'
+import { toolTraffic, NO_TRAFFIC, watchForFailedCall } from './traffic.ts'
 import { summarize } from './turn.ts'
 import type { TurnReport } from './turn.ts'
 
@@ -48,6 +48,13 @@ import type { TurnReport } from './turn.ts'
 export interface ResidentConfig {
   sessionId: string
   mode: SessionMode
+  /**
+   * End a turn at its first failed tool call rather than letting the model
+   * drive on past it. Per turn here, not per process: it is a mind under
+   * test's whole dispatch shape, and a resident process that ignored it would
+   * silently exempt every chat turn from the measurement the one-shot makes.
+   */
+  stopOnFailedCall?: boolean
 }
 
 /** Process-facing effects, separated from stdio so the lifecycle is testable. */
@@ -245,14 +252,23 @@ export async function runResident(
       }
       const firstSeq = agent.session.seq
       state.current = parsed.id
+      // Armed before the turn is sent, so a failure in its first call stops it
+      // as readily as one in its last.
+      const watch = config.stopOnFailedCall === true
+        ? watchForFailedCall(agent as never, firstSeq)
+        : undefined
       try {
         agent.followup(createUserMessage({
           content: [{ type: 'text', text: parsed.turn }],
           source: { kind: 'user' },
         }))
-        await agent.whenIdle()
+        await (watch === undefined
+          ? agent.whenIdle()
+          : Promise.race([agent.whenIdle(), watch.settled]))
+        watch?.stop()
         await sessions.flush(agent.session)
         const sofar = summarize(agent.session.events, firstSeq)
+        const refusal = watch?.check()
         io.write({
           sessionId: config.sessionId,
           mode: config.mode,
@@ -261,8 +277,23 @@ export async function runResident(
           traffic: toolTraffic(agent.session.events, firstSeq),
           turns: sofar.turns,
           id: parsed.id,
+          ...(refusal === undefined
+            ? sofar.reason?.kind === 'error'
+              ? { error: { code: sofar.reason.error.code, message: sofar.reason.error.message } }
+              : {}
+            : {
+              error: {
+                code: 'STOPPED_ON_FAILED_CALL',
+                // The call as the model spelled it, which side turned it away,
+                // and what it said. That is the whole input to the fix, so none
+                // of it is dropped.
+                message: `${refusal.name}(${refusal.parameters.join(', ')}) failed at the `
+                  + `${refusal.origin} with ${refusal.code} (${refusal.errorName}): ${refusal.message}`,
+              },
+            }),
         } satisfies TurnReport)
       } finally {
+        watch?.stop()
         // Cleared after the report, so a job settling during the turn is
         // framed as part of it, and one settling after is not.
         state.current = undefined

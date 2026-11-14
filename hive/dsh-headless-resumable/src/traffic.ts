@@ -377,3 +377,64 @@ export function toolTraffic(events: readonly SessionEvent[], firstSeq: number): 
   traffic.unservedCalls = [...unserved.values()]
   return traffic
 }
+
+
+/**
+ * How often a stopping run re-reads the session for a refusal. The session's
+ * event array grows in memory, so this is a walk over a list and not IO.
+ */
+export const FAILURE_POLL_MS = 250
+
+/** A watch that resolves the moment a tool call fails, and can be dropped. */
+export interface FailureWatch {
+  /**
+   * Resolves with the failure; never resolves while the run stays clean. This is
+   * what cuts a round short, since a round is minutes long and nothing else wakes
+   * up inside one.
+   */
+  readonly settled: Promise<FailedCall>
+  /**
+   * Read the session now rather than waiting for the next poll. A round
+   * boundary is a decision point, and a refusal that landed microseconds
+   * earlier must not buy another round for want of a timer tick.
+   */
+  check(): FailedCall | undefined
+  /** Stop polling, so a finished run leaves no timer behind. */
+  stop(): void
+}
+
+/**
+ * Watch one run's own interval for its first failed tool call.
+ * @param agent - the live agent, read for its session events.
+ * @param firstSeq - the sequence number this run's interval starts at.
+ * @returns the watch.
+ */
+export function watchForFailedCall(
+  agent: { session: { events: readonly SessionEvent[] } }, firstSeq: number,
+): FailureWatch {
+  let found: FailedCall | undefined
+  let timer: ReturnType<typeof setInterval> | undefined
+  const settled = new Promise<FailedCall>((resolve) => {
+    timer = setInterval(() => {
+      const failure = firstFailedCall(agent.session.events, firstSeq)
+      if (failure === undefined) return
+      found = failure
+      if (timer !== undefined) clearInterval(timer)
+      timer = undefined
+      resolve(failure)
+    }, FAILURE_POLL_MS)
+    // A poll that keeps the process alive would outlive the run it watches.
+    timer.unref?.()
+  })
+  return {
+    settled,
+    check: () => {
+      found ??= firstFailedCall(agent.session.events, firstSeq)
+      return found
+    },
+    stop: () => {
+      if (timer !== undefined) clearInterval(timer)
+      timer = undefined
+    },
+  }
+}
