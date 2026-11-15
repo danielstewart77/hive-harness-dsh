@@ -505,31 +505,67 @@ describe('dsh-tool-subagent-report', () => {
     expect((await callReport(ctx, child, 'after-close')).isError).toBe(true)
   })
 
+  it('tells the child when its report reaches the parent in each mode', async () => {
+    const held = await setup({ config: {} })
+    const { child: holdingChild } = await startChild(held.ctx, held.parent)
+    const holding = await held.ctx.systemPrompt.assemble(assembleContextFor(holdingChild))
+    const holdingText = holding.sections.find(section => section.name === 'tool:report')?.text ?? ''
+    // Under the default the parent cannot act on an early report, so the
+    // guidance must not invite the child to expect that it will.
+    expect(holdingText).toContain('everything you report reaches that agent together when you finish')
+    expect(holdingText).not.toContain('changes what that agent should do next')
+
+    const waking = await setup({ config: { reportDelivery: 'wakeup' } })
+    const { child: wakingChild } = await startChild(waking.ctx, waking.parent)
+    const woken = await waking.ctx.systemPrompt.assemble(assembleContextFor(wakingChild))
+    const wokenText = woken.sections.find(section => section.name === 'tool:report')?.text ?? ''
+    // A deployment that pays for immediate delivery still promises it.
+    expect(wokenText).toContain('changes what that agent should do next')
+    expect(wokenText).not.toContain('together when you finish')
+
+    // The tool description carries the same mode-dependent promise and is read
+    // at a different moment than the prompt section, so it needs its own check:
+    // the section alone passes against a description wired to the wrong mode.
+    const holdingSchema = held.ctx.tools.schemas(holdingChild).find(schema => schema.name === 'report')
+    const wakingSchema = waking.ctx.tools.schemas(wakingChild).find(schema => schema.name === 'report')
+    expect(holdingSchema?.description).toContain('everything you report reaches that agent together')
+    expect(holdingSchema?.description).not.toContain('earlier for progress or findings')
+    expect(wakingSchema?.description).toContain('earlier for progress or findings')
+    expect(wakingSchema?.description).not.toContain('together when you finish')
+  })
+
   it('keeps the namespace plugin shape and validates its default', () => {
     expect('default' in tool).toBe(false)
     expect(tool.name).toBe('tool-subagent-report')
     expect(tool.inject).toEqual(['subagents', 'tools', 'systemPrompt'])
-    // Waking is the default because a report that never wakes its parent
-    // cannot deliver a result to an agent that already parked.
-    expect(tool.Config({}).reportDelivery).toBe('wakeup')
+    // Settlement is the default because a child that reports and then finishes
+    // otherwise costs its parent two messages restating each other.
+    expect(tool.Config({}).reportDelivery).toBe('settlement')
     expect(() => tool.Config({ reportDelivery: 'shout' } as never)).toThrow()
   })
 
-  it('wakes the parent under the default configuration', async () => {
+  it('holds a report for the settlement notice under the default configuration', async () => {
     const { ctx, parent, adapter } = await setup({ config: {} })
     const { child } = await startChild(ctx, parent)
-    const enqueues: string[] = []
+    const parentRequests = adapter.requests.filter(request => request.sessionId === parent.id).length
+    const inserted: string[] = []
     ctx.on('agent/inbox/inserted', ({ agent, message }) => {
-      if (agent === parent) {
-        enqueues.push(agent.inbox.nextTurn.some(queued => queued.id === message.id) ? 'queued' : 'steering')
-      }
+      if (agent === parent) inserted.push(message.source.kind)
     })
 
-    expect((await callReport(ctx, child, 'DEFAULT_WAKES')).isError).toBe(false)
-    expect(enqueues).toEqual(['queued'])
+    expect((await callReport(ctx, child, 'HELD_FOR_SETTLEMENT')).isError).toBe(false)
+    // Accepted, but nothing is enqueued and no parent request is started: the
+    // default spends one message on the child's ending, not two.
+    expect(inserted).toEqual([])
+    expect(parent.inbox.hasPending).toBe(false)
+    expect(adapter.requests.filter(request => request.sessionId === parent.id)).toHaveLength(parentRequests)
+
+    // It is held, not dropped: the content arrives inside the one notice.
+    adapter.release()
     await vi.waitFor(() => {
-      expect(adapter.requests.some(request => request.sessionId === parent.id)).toBe(true)
-    })
+      expect(inserted).toEqual(['subagent-settled'])
+    }, { timeout: 5_000 })
+    expect(userTexts(parent.session.events).join('\n')).toContain('HELD_FOR_SETTLEMENT')
   })
 })
 

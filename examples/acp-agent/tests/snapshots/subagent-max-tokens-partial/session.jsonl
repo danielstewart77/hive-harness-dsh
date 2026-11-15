@@ -23,4 +23,5 @@
 {"type":"assistant/chunk","seq":21,"time":1786348800173,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}
 {"type":"assistant/message","seq":22,"time":1786348800173,"data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"PARENT_DONE"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"fb14560d-1d98-4b18-8736-b079de400315"},"usage":{"inputTokens":12,"outputTokens":2}},"sourceEventSeqs":[18,19,20,21],"surfaceOp":"append"}
 {"type":"step/end","seq":23,"time":1786348800173,"data":{"turn":1,"step":2}}
-{"type":"turn/end","seq":24,"time":1786348800173,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"context/measured","seq":24,"time":1794747649157,"data":{"turn":1,"model":"deepseek-v4-flash","tokens":14,"kind":"usage","window":null}}
+{"type":"turn/end","seq":25,"time":1794747649157,"data":{"turn":1,"reason":{"kind":"completed"}}}

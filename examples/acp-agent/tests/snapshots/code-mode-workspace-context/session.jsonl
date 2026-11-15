@@ -31,4 +31,5 @@
 {"type":"assistant/chunk","seq":29,"time":1785901435233,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}
 {"type":"assistant/message","seq":30,"time":1785901435233,"data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"**Code Mode workspace handshake:** `CODE_MODE_CONTEXT_OK`"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"add632ac-e646-4e50-84d3-96a084427a01"},"usage":{"inputTokens":10,"outputTokens":5}},"sourceEventSeqs":[25,26,27,28,29],"surfaceOp":"append"}
 {"type":"step/end","seq":31,"time":1785901435233,"data":{"turn":1,"step":2}}
-{"type":"turn/end","seq":32,"time":1785901435234,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"context/measured","seq":32,"time":1794747752144,"data":{"turn":1,"model":"deepseek-v4-flash","tokens":15,"kind":"usage","window":null}}
+{"type":"turn/end","seq":33,"time":1794747752144,"data":{"turn":1,"reason":{"kind":"completed"}}}

@@ -35,4 +35,5 @@
 {"type":"assistant/chunk","seq":33,"time":1785730459943,"data":{"turn":1,"step":3,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}
 {"type":"assistant/message","seq":34,"time":1785730459943,"data":{"turn":1,"step":3,"message":{"role":"assistant","content":[{"type":"text","text":"CORDIS_INSPECT_JSDOC_OK"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"a4aa43b5-240e-423a-bc03-0abed8d890e4"},"usage":{"inputTokens":3,"outputTokens":3}},"sourceEventSeqs":[29,30,31,32,33],"surfaceOp":"append"}
 {"type":"step/end","seq":35,"time":1785730459943,"data":{"turn":1,"step":3}}
-{"type":"turn/end","seq":36,"time":1785730459943,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"context/measured","seq":36,"time":1794747697145,"data":{"turn":1,"model":"deepseek-v4-flash","tokens":6,"kind":"usage","window":null}}
+{"type":"turn/end","seq":37,"time":1794747697146,"data":{"turn":1,"reason":{"kind":"completed"}}}

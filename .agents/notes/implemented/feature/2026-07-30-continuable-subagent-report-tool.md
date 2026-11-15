@@ -14,7 +14,7 @@ Treating every final assistant message as an implicit result would conflate turn
 
 Add the independently installed `@deepseek-ai/dsh-tool-subagent-report` package. It contributes an ordinary model-facing `report` tool to each continuable in-process child Activation. The mechanism accepts zero or multiple calls in a turn; the child is separately instructed to call it once before finishing ([the report obligation](2026-08-06-continuable-child-report-obligation.md)). Success neither concludes the turn, settles the Activation, nor prevents later parent follow-ups, and finishing a turn never reports automatically.
 
-The feature is a collaboration control, not a result-bearing execution wrapper. It adds no Task, `SubagentRun`, result promise, Activation state, delivery queue, or replay path.
+The feature is a collaboration control, not a result-bearing execution wrapper. It adds no Task, `SubagentRun`, result promise, or replay path. It originally added no Activation state or delivery queue either; the `settlement` delivery mode that [merges a report into the child's settlement notice](2026-11-15-one-statement-when-a-continuable-child-finishes.md) now holds reports on the Activation for the duration of one epoch, bounded by the child's own quiescence.
 
 ### Model-facing contract
 
@@ -36,13 +36,13 @@ Nested reporting crosses exactly one edge. A grandchild reports to its direct ch
 
 ### Delivery policy
 
-The package validates `reportDelivery: 'quiet' | 'wakeup'`; the default is `wakeup` ([why the default reversed](2026-08-06-continuable-child-report-obligation.md)).
+The package validates `reportDelivery: 'quiet' | 'wakeup' | 'settlement'`; the default is `settlement`, which delivers the report inside the child's own settlement notice ([why](2026-11-15-one-statement-when-a-continuable-child-finishes.md)). `wakeup` was the default before that, for [the reason the default first reversed](2026-08-06-continuable-child-report-obligation.md).
 
 Quiet delivery calls `parent.inject()`. It adds model-visible context without starting a parent model request: an idle parent appends before the call returns, while an admitting or running parent stages the report for the next safe log position. It creates no inbox occurrence and therefore no synthetic continuation-manager acceptance record.
 
 Waking delivery calls `parent.followup()`. It creates one ordinary FIFO parent turn, wakes a parked parent driver, and never steers an open turn. When that parent is itself a continuable Activation, the send uses the manager's existing admission accounting so the parent cannot settle between synchronous enqueue and the admission microtask.
 
-Both modes frame one user-role message as `Background subagent <child-id> reported:` followed by the exact `output`. The durable message source is `{ kind: 'subagent-report', senderSessionId: child.id }`. Normal Agent ordering governs concurrent sends; the subagent layer creates no second queue.
+Both of those modes frame one user-role message as `Background subagent <child-id> reported:` followed by the exact `output`. The durable message source is `{ kind: 'subagent-report', senderSessionId: child.id }`. Normal Agent ordering governs concurrent sends. `settlement` delivery frames no message of its own: the content reaches the parent under `Its report:` inside the `subagent-settled` notice, and the returned id is that notice's own identity.
 
 ### Acknowledgement and recovery
 

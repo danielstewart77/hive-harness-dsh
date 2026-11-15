@@ -14,7 +14,7 @@ Status: implemented
 
 新增可独立安装的 `@deepseek-ai/dsh-tool-subagent-report` 包。它会向每个可继续进程内 child Activation 贡献一个普通的面向模型 `report` 工具。机制本身接受一个轮次中调用零次或多次；child 会另行被要求在结束前调用一次（见[报告义务](2026-08-06-continuable-child-report-obligation.md)）。调用成功既不会结束该轮次或结算 Activation，也不会阻止 parent 之后继续 follow-up；完成轮次也绝不会自动报告。
 
-该功能是协作控制，不是承载结果的执行包装层。它不新增 Task、`SubagentRun`、结果 promise、Activation 状态、投递队列或回放路径。
+该功能是协作控制，不是承载结果的执行包装层。它不新增 Task、`SubagentRun`、结果 promise 或回放路径。它起初也不新增 Activation 状态或投递队列；如今[把报告并入 child 结算通知](2026-11-15-one-statement-when-a-continuable-child-finishes.md)的 `settlement` 投递模式会在一个 epoch 内把报告暂存在 Activation 上，其边界是 child 自身的静止。
 
 ### 面向模型的约定
 
@@ -36,13 +36,13 @@ root、one-shot child、伪造对象、陈旧 Agent 和同 id 替换对象都以
 
 ### 投递策略
 
-该包会校验 `reportDelivery: 'quiet' | 'wakeup'`，默认值为 `wakeup`（见[默认值反转的理由](2026-08-06-continuable-child-report-obligation.md)）。
+该包会校验 `reportDelivery: 'quiet' | 'wakeup' | 'settlement'`，默认值为 `settlement`，它把报告放进 child 自己的结算通知里投递（见[理由](2026-11-15-one-statement-when-a-continuable-child-finishes.md)）。在此之前默认值是 `wakeup`，见[默认值首次反转的理由](2026-08-06-continuable-child-report-obligation.md)。
 
 静默投递调用 `parent.inject()`。它会添加模型可见上下文，但不启动 parent 模型请求：若 parent 空闲，则在调用返回前追加消息；若 parent 正在准入或运行，则暂存报告，留到下一个安全日志位置。该模式不创建 inbox 条目实例，因此也不会产生虚构的继续执行管理器接受记录。
 
 唤醒投递调用 `parent.followup()`。它会创建一个普通的 FIFO parent 轮次，唤醒已停驻的 parent driver，且绝不 steering（中途引导）已开始的轮次。当该 parent 本身也是可继续 Activation 时，发送会使用管理器现有的准入计数，防止 parent 在同步入队与准入微任务之间结算。
 
-两种模式都会将一条用户角色消息封装为 `Background subagent <child-id> reported:`，后面跟随完全原样的 `output`。持久化消息来源为 `{ kind: 'subagent-report', senderSessionId: child.id }`。并发发送的顺序由 Agent 的常规规则决定；subagent 层不会创建第二条队列。
+上述两种模式都会将一条用户角色消息封装为 `Background subagent <child-id> reported:`，后面跟随完全原样的 `output`。持久化消息来源为 `{ kind: 'subagent-report', senderSessionId: child.id }`。并发发送的顺序由 Agent 的常规规则决定。`settlement` 投递不封装属于自己的消息：内容在 `subagent-settled` 通知内部以 `Its report:` 抵达 parent，而返回的 id 就是该通知自身的身份。
 
 ### 确认与恢复
 

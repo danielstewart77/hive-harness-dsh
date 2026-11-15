@@ -2694,9 +2694,14 @@ Requires: `subagents` · `tools` · `systemPrompt`
 /** Config: how accepted reports are scheduled on the parent. */
 export interface Config {
   /**
-   * Parent scheduling (default `wakeup`). `wakeup` creates one ordinary later
-   * parent turn; `quiet` adds context without waking, so a parked parent learns
-   * of the report only when something else wakes it.
+   * Parent scheduling (default `settlement`). `settlement` holds the report
+   * and delivers it inside the child's own settlement notice, so a child that
+   * reports and then finishes costs the parent one message rather than two
+   * restating each other. `wakeup` creates one ordinary later parent turn per
+   * report; `quiet` adds context without waking, so a parked parent learns of
+   * the report only when something else wakes it. Both of the latter two send
+   * each report as it is accepted, which is what a deployment keeps when the
+   * parent must act on an early report before the child has finished.
    */
   reportDelivery?: SubagentReportDelivery
 }

@@ -25,4 +25,5 @@
 {"type":"assistant/chunk","seq":23,"time":1786338530782,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}
 {"type":"assistant/message","seq":24,"time":1786338530782,"data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"PARENT_DONE"}],"source":{"kind":"model","provider":"deepseek-official","model":"deepseek-v4-flash"},"id":"84586dd8-4985-4286-ab4b-fa9965803fb8"}},"sourceEventSeqs":[21,22,23],"surfaceOp":"append"}
 {"type":"step/end","seq":25,"time":1786338530782,"data":{"turn":1,"step":2}}
-{"type":"turn/end","seq":26,"time":1786338530782,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"context/measured","seq":26,"time":1794747655503,"data":{"turn":1,"model":"deepseek-v4-flash","tokens":6970,"kind":"estimated","window":null}}
+{"type":"turn/end","seq":27,"time":1794747655503,"data":{"turn":1,"reason":{"kind":"completed"}}}
