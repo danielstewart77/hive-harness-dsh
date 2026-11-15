@@ -30,8 +30,8 @@ import type {
   AgentSetupCommit,
   CreateAgentOptions,
 } from '@deepseek-ai/dsh-agent'
-import { boundContextSummary, createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, MessageId, MessageSource } from '@deepseek-ai/dsh-llm'
+import { MessageId, boundContextSummary, createUserMessage, errorChain, freezeMessage } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, MessageSource, UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '@deepseek-ai/dsh-session-persistence'
@@ -78,6 +78,11 @@ export interface SubagentReportMessageSource {
  * {@link SubagentReportMessageSource}: a report is content the child chose,
  * while this message is the manager stating what became of the child, and a
  * transcript that merged them would credit the child with words it never wrote.
+ *
+ * The notice may still quote the child — its closing message, or the reports
+ * `settlement` delivery held for it — but every quoted span follows a labelled
+ * lead-in the manager wrote, so which words are whose stays readable. The kind
+ * names the author of the account, not the provenance of every block in it.
  */
 export interface SubagentSettledMessageSource {
   readonly kind: 'subagent-settled'
@@ -97,8 +102,17 @@ declare module '@deepseek-ai/dsh-llm' {
   }
 }
 
-/** Deployment scheduling policy for accepted child reports. */
-export type SubagentReportDelivery = 'quiet' | 'wakeup'
+/**
+ * Deployment scheduling policy for accepted child reports.
+ *
+ * `settlement` holds the report and delivers it inside the child's own
+ * settlement notice, so a child that reports and then finishes costs the
+ * parent one message instead of two restating each other. `wakeup` and
+ * `quiet` send each report as its own parent message the moment it is
+ * accepted, which is what a deployment keeps when it needs the parent to act
+ * on an early report before the child has finished.
+ */
+export type SubagentReportDelivery = 'quiet' | 'wakeup' | 'settlement'
 
 /** Options for one continuable child's report to its direct parent. */
 export interface SubagentReportOptions {
@@ -237,6 +251,27 @@ interface Activation {
   announced: boolean
   /** Renewed whenever a settlement watcher must re-observe quiescence. */
   poke: PromiseWithResolvers<void>
+  /**
+   * Reports `settlement` delivery accepted but has not handed to the parent
+   * yet, in `reportFrom` acceptance order — the order this manager controls,
+   * which is not necessarily the order of the child's tool calls when a step
+   * runs several concurrently.
+   *
+   * Held only while the child itself is still working. The settlement notice
+   * carries whatever is here, and {@link SubagentContinuationManager.flushHeldReports}
+   * empties it through the ordinary report path when the child goes quiescent
+   * but this Activation cannot settle because it still owns live descendants.
+   * Process-local like the rest of the Activation: a crash during the hold
+   * loses them, and the child's own durable transcript is the recovery source.
+   */
+  readonly heldReports: ContentBlock[][]
+  /**
+   * The identity the settlement notice will carry, minted with the Activation
+   * so a held report can be acknowledged with the id of the parent message
+   * that will actually deliver it. Without pre-minting, `report` would have to
+   * answer the child with an id naming no message in the parent's log.
+   */
+  readonly settlementMessageId: MessageId
 }
 
 /** Inputs shared by fresh and resumed Activation materialization. */
@@ -309,6 +344,28 @@ function settlementSummary(childId: SessionId, stopReason: SubagentResult['stopR
     default:
       return `${subject} ended abnormally (${String(stopReason)}) before it finished.`
   }
+}
+
+/**
+ * The content blocks a settlement notice carries for the reports `settlement`
+ * delivery held, or `undefined` when the child held none and the notice should
+ * fall back to its closing message.
+ *
+ * Each held report gets its own labelled lead-in, numbered when there is more
+ * than one, so the parent can tell where one report ends and the next begins
+ * and in what order the child made them.
+ * @param held - reports in acceptance order, as the Activation holds them.
+ * @returns the lead-in and content blocks, or `undefined` for an empty hold.
+ */
+function reportedContent(held: readonly ContentBlock[][]): ContentBlock[] | undefined {
+  if (held.length === 0) return undefined
+  return held.flatMap((content, index) => [
+    {
+      type: 'text' as const,
+      text: held.length === 1 ? 'Its report:' : `Its report ${index + 1} of ${held.length}:`,
+    },
+    ...content,
+  ])
 }
 
 /** Whether one settlement attempt opened the disposal transaction. */
@@ -626,14 +683,45 @@ export class SubagentContinuationManager {
     return parent
   }
 
-  /** Deliver one framed report through the selected parent scheduling preset. */
+  /**
+   * Deliver one framed report through the selected parent scheduling preset.
+   *
+   * `settlement` delivery enqueues nothing: the report is held on the
+   * Activation and reaches the parent inside the settlement notice, so the
+   * parent reads the result and the ending as one statement instead of two
+   * that restate each other. The parent is still resolved and authorized
+   * first, so a child whose parent is already gone learns that from its own
+   * `report` call rather than silently filling a buffer nobody will read.
+   */
   private deliverReport(
     activation: Activation,
     parent: Agent,
     content: ContentBlock[],
     delivery: SubagentReportDelivery,
   ): MessageId {
-    const message = createUserMessage({
+    if (delivery === 'settlement') {
+      activation.heldReports.push(content)
+      // A report accepted while the child is already quiescent has missed the
+      // settlement watcher's quiescence observation, so nothing would look at
+      // the hold again until something else moved the Activation. Poking the
+      // watcher makes it re-observe and either settle or flush; a report from
+      // inside a running turn — every call the `report` tool can make — takes
+      // this branch only when the turn is already over.
+      if (activation.handle.agent.status !== 'running') this.wake(activation)
+      return activation.settlementMessageId
+    }
+    const message = this.frameReport(activation, content)
+    if (delivery === 'wakeup') {
+      this.sendWaking(parent, message, () => { this.sendReport(parent, message, delivery) })
+    } else {
+      this.sendReport(parent, message, delivery)
+    }
+    return message.id
+  }
+
+  /** Frame one report as the parent-facing user message both delivery paths send. */
+  private frameReport(activation: Activation, content: ContentBlock[]): UserMessage {
+    return createUserMessage({
       content: [
         { type: 'text' as const, text: `Background subagent ${activation.childId} reported:` },
         ...content,
@@ -644,12 +732,55 @@ export class SubagentContinuationManager {
         senderSessionId: activation.childId,
       },
     })
-    if (delivery === 'wakeup') {
-      this.sendWaking(parent, message, () => { this.sendReport(parent, message, delivery) })
-    } else {
-      this.sendReport(parent, message, delivery)
+  }
+
+  /**
+   * Hand every held report to the parent through the ordinary waking report
+   * path, emptying the hold.
+   *
+   * This is the escape from an unbounded hold. A held report is only folded
+   * into the settlement notice because that notice is imminent; an Activation
+   * that owns live descendants is `waiting` rather than `settled`, and holding
+   * until its whole subtree finished would strand a result its parent could
+   * already act on — with no way out, because `interrupt()` cancels the
+   * current turn of an already idle child and does not cascade. Flushing at
+   * the child's own quiescence costs that case the second message the merged
+   * notice saves, which is exactly today's behaviour and never worse.
+   * @param activation - the Activation whose held reports are due.
+   */
+  private flushHeldReports(activation: Activation): void {
+    if (activation.heldReports.length === 0) return
+    const held = activation.heldReports.splice(0, activation.heldReports.length)
+    const parent = this.ctx.agents.get(activation.parentSession)
+    if (parent === undefined) {
+      this.ctx.logger.warn(
+        `subagent "${activation.childId}" held ${held.length} report(s) its parent never became `
+        + 'available to receive',
+      )
+      return
     }
-    return message.id
+    // The same teardown rule the settlement notice keeps: waking a parent whose
+    // own lineage is closing spends a model request on an Agent its host is
+    // about to dispose, once per tree layer. A flush is no more a reason to
+    // start a turn than a notice is.
+    const closing = this.closingTeardownFor(parent) !== undefined
+    for (const content of held) {
+      const message = this.frameReport(activation, content)
+      try {
+        /* v8 ignore next 2 -- reaching the closing arm needs a child still owning a live
+         * descendant while its own lineage is already tearing down and its own disposal
+         * transaction has not yet opened: the window between `drain()` setting the closing
+         * scope and this Activation's disposal, held open only by an unrelated
+         * materialization. Staging it deterministically means fabricating that race. */
+        if (closing) this.sendReport(parent, message, 'quiet')
+        else this.sendWaking(parent, message, () => { this.sendReport(parent, message, 'wakeup') })
+      } catch (error: unknown) {
+        this.ctx.logger.warn(
+          `subagent "${activation.childId}" held report was not delivered to its parent: `
+          + errorChain(error),
+        )
+      }
+    }
   }
 
   /**
@@ -1037,6 +1168,8 @@ export class SubagentContinuationManager {
       accepted: new Set(),
       announced: false,
       poke: Promise.withResolvers<void>(),
+      heldReports: [],
+      settlementMessageId: MessageId(randomUUID()),
     }
     // After transfer, any failure must dispose the created handle, remove the
     // Activation, and roll back parent ownership before rejecting.
@@ -1250,6 +1383,21 @@ export class SubagentContinuationManager {
           return Promise.resolve({ settling: true, done: this.dispose(activation) })
         })
         if (!settling.settling) {
+          // The child's own work is done but no settlement notice is coming
+          // while it still owns live descendants, so anything held for that
+          // notice is released through the ordinary report path instead of
+          // waiting for a subtree the parent is not blocked on.
+          //
+          // `stateOf`, not `Agent.status`: status reads `idle` both for a
+          // genuinely quiet child and for one in context maintenance, and it
+          // cannot see an accepted-but-unclaimed inbox message. Either of
+          // those would flush a child that is about to settle normally,
+          // handing the parent the report separately AND then a notice — the
+          // two messages this whole mode exists to collapse — and leaving the
+          // id the child was acknowledged with naming the wrong one.
+          if (this.stateOf(activation) === 'waiting') {
+            this.flushHeldReports(activation)
+          }
           // Still running, or waiting on descendants: re-observe after the next
           // accepted message or ownership release.
           if (activation.handle.agent.status !== 'running') await poked
@@ -1398,25 +1546,44 @@ export class SubagentContinuationManager {
    * @param terminal - how this epoch ended, as the terminal edge will report it.
    */
   private notifySettlement(activation: Activation, terminal: ActivationTerminal): void {
+    // `announced` is set in `submit()`, before the child's first turn, so a
+    // child here with held reports is impossible: it could not have called
+    // `report` without first receiving a message.
     if (!activation.announced) return
     try {
       const parent = this.ctx.agents.get(activation.parentSession)
-      if (parent === undefined) return
+      if (parent === undefined) {
+        this.dropHeldReports(activation, 'its parent had already left the registry')
+        return
+      }
       const summary = settlementSummary(activation.childId, terminal.stopReason)
-      const message = createUserMessage({
+      const message = freezeMessage({
+        // The identity the first held report was acknowledged with, so that
+        // acknowledgement names the message actually carrying it.
+        id: activation.settlementMessageId,
+        role: 'user' as const,
         content: [
           { type: 'text' as const, text: summary },
-          ...terminal.output === undefined
+          ...reportedContent(activation.heldReports)
+          // A child that reported has already said what it produced, and the
+          // report is the channel its own instructions name as the result.
+          // Restating the closing remark after it is the duplication this
+          // delivery mode exists to remove.
+          ?? (terminal.output === undefined
             ? [{ type: 'text' as const, text: 'It left no closing message.' }]
-            : [{ type: 'text' as const, text: 'Its closing message:' }, ...terminal.output],
+            : [{ type: 'text' as const, text: 'Its closing message:' }, ...terminal.output]),
         ],
         source: {
           kind: 'subagent-settled' as const,
           form: 'notice' as const,
+          // The collapsed row stays the manager's own one-line account; the
+          // child's words are only ever in the expanded content.
           summary: boundContextSummary(summary),
           senderSessionId: activation.childId,
         },
       })
+      // The hold is cleared only once a send has actually been attempted, so a
+      // throwing send still knows a result died with the notice.
       // A parent whose own teardown already began must not be woken. Waking is
       // not a queue operation: `followup()` on a quiescent Agent starts a turn,
       // and `cancel()` does not arm against a later one, so a notice arriving
@@ -1427,7 +1594,19 @@ export class SubagentContinuationManager {
       // does NOT survive that parent's own disposal, whose `keepInbox: false`
       // cancel durably clears whatever it never claimed.
       if (this.closingTeardownFor(parent) !== undefined) {
+        // An injected notice does not survive the parent's own disposal. That
+        // costs an outcome restatement when the notice carries only one; when
+        // it is carrying the child's reported result, the result goes with it,
+        // so say so rather than letting a result the child was told had been
+        // accepted disappear with nothing in the log.
+        if (activation.heldReports.length > 0) {
+          this.ctx.logger.warn(
+            `subagent "${activation.childId}" delivered ${activation.heldReports.length} held report(s) `
+            + 'into a parent whose own teardown had begun; an unclaimed notice does not survive it',
+          )
+        }
         parent.inject(message)
+        activation.heldReports.length = 0
         return
       }
       // An idle parent has nothing else to look at, so it gets one ordinary
@@ -1440,12 +1619,33 @@ export class SubagentContinuationManager {
         if (parent.status === 'idle') parent.followup(message)
         else parent.steer(message)
       })
+      activation.heldReports.length = 0
     } catch (error: unknown) {
+      this.dropHeldReports(activation, 'its settlement notice was not delivered')
       this.ctx.logger.warn(
         `subagent "${activation.childId}" settlement notice was not delivered to its parent: `
         + errorChain(error),
       )
     }
+  }
+
+  /**
+   * Account for held reports going down with a notice that cannot be
+   * delivered. The content is not recoverable from here — the report path
+   * needs the same live parent the notice needed — so the only thing owed is a
+   * log line that says a result was lost rather than letting it vanish inside
+   * a message about the notice.
+   * @param activation - the settling Activation whose hold is being discarded.
+   * @param reason - why the notice carrying them could not reach the parent.
+   */
+  private dropHeldReports(activation: Activation, reason: string): void {
+    const dropped = activation.heldReports.length
+    if (dropped === 0) return
+    activation.heldReports.length = 0
+    this.ctx.logger.warn(
+      `subagent "${activation.childId}" lost ${dropped} held report(s) because ${reason}; `
+      + 'its own session remains the durable record',
+    )
   }
 
   /**

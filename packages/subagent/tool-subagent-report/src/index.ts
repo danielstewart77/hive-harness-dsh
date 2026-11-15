@@ -26,15 +26,20 @@ const REPORT_SECTION_ORDER = 117
 /** Config: how accepted reports are scheduled on the parent. */
 export interface Config {
   /**
-   * Parent scheduling (default `wakeup`). `wakeup` creates one ordinary later
-   * parent turn; `quiet` adds context without waking, so a parked parent learns
-   * of the report only when something else wakes it.
+   * Parent scheduling (default `settlement`). `settlement` holds the report
+   * and delivers it inside the child's own settlement notice, so a child that
+   * reports and then finishes costs the parent one message rather than two
+   * restating each other. `wakeup` creates one ordinary later parent turn per
+   * report; `quiet` adds context without waking, so a parked parent learns of
+   * the report only when something else wakes it. Both of the latter two send
+   * each report as it is accepted, which is what a deployment keeps when the
+   * parent must act on an early report before the child has finished.
    */
   reportDelivery?: SubagentReportDelivery
 }
 
 export const Config: z<Config> = z.object({
-  reportDelivery: z.union(['quiet', 'wakeup'] as const).default('wakeup'),
+  reportDelivery: z.union(['quiet', 'wakeup', 'settlement'] as const).default('settlement'),
 })
 
 /**
@@ -51,14 +56,25 @@ export function installReportTool(
   ctx: Context,
   delivery: SubagentReportDelivery,
 ): () => void {
+  // What repeated reporting buys the child depends on the mode, and the child
+  // is the one deciding whether to call again. Under `settlement` an early
+  // report does not reach the parent early, so inviting the child to report
+  // "whenever a finding changes what that agent should do next" would promise
+  // a reaction it cannot get; what is true there is that nothing it reports is
+  // dropped in favour of a later report.
+  const held = delivery === 'settlement'
+  const sectionRepeat = held
+    ? 'Report again whenever your conclusions change as you work: everything you report reaches that agent '
+      + 'together when you finish. Reporting never ends your turn.'
+    : 'Report earlier as well whenever a partial finding changes what that agent should do next; '
+      + 'reporting never ends your turn.'
   const disposeSection = childCtx.systemPrompt.section({
     name: 'tool:report',
     order: REPORT_SECTION_ORDER,
     text: 'Deliver your result with the report tool before you finish: call it once with a self-contained '
       + 'answer. The agent that started you shares your workspace but does not automatically receive your '
       + 'transcript, tool output, or reasoning, so a closing remark such as "done" leaves it nothing it can '
-      + 'use. Report earlier as well whenever a partial finding changes what that agent should do next; '
-      + 'reporting never ends your turn.',
+      + `use. ${sectionRepeat}`,
   })
   let disposeTool: () => void
   try {
@@ -66,8 +82,12 @@ export function installReportTool(
       name: 'report',
       description:
         'Report selected content to the agent that started you. Call this once before you finish, with a '
-        + 'self-contained final result, and earlier for progress or findings that change what that agent does '
-        + 'next. That agent shares your workspace but does not automatically receive your transcript, tool '
+        + 'self-contained final result, '
+        + (held
+          ? 'and again whenever your conclusions change as you work — everything you report reaches that '
+            + 'agent together when you finish. '
+          : 'and earlier for progress or findings that change what that agent does next. ')
+        + 'That agent shares your workspace but does not automatically receive your transcript, tool '
         + 'output, or reasoning, so finishing your work is not itself a result. Reporting does not end your '
         + 'turn or finish your work, and only your direct parent receives it. A failed call may still have '
         + 'arrived, so do not blindly repeat it.',

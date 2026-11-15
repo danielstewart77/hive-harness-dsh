@@ -379,7 +379,7 @@ export function apply(ctx: Context, config: Config): void {
         // a separately installed capability, so this promise holds whenever the
         // continuable background path is reachable at all.
         ? continuable
-          ? ' This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result.'
+          ? ' This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and its result; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result.'
           : ' This call waits for the result by default. Set `run_in_background: true` to return a job id; collect with `job_output` and stop with `job_kill`.'
         : ' This call waits for the subagent and returns its result.'),
       parameters: {
@@ -557,7 +557,7 @@ export function apply(ctx: Context, config: Config): void {
       order: SUBAGENT_SECTION_ORDER,
       text: context => disposeTool === undefined || ctx.tools.get(toolName, context.scope) === undefined
         ? ''
-        : `Use ${toolName} in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set \`run_in_background: false\` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.`,
+        : `Use ${toolName} in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set \`run_in_background: false\` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and its result.`,
     })
   }
 }

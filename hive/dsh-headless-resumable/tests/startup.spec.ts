@@ -163,7 +163,13 @@ describe('the bundle patch that hands startup values to the runner', () => {
       sessionId: 'abc', interactive: true, contextFile: 'context',
       contextAsTurn: true,
     }, () => 'text'))
-    const resolved = [...new Set([...batch, ...interactive])]
+    // Resident is its own third shape, not a variant of the two above:
+    // `--resident` refuses `--interactive`, a named task, and goal rounds, so
+    // no single option set can materialize every field the provider carries.
+    const resident = Object.keys(resolveInvocation([], {
+      sessionId: 'abc', resident: true,
+    }, () => 'text'))
+    const resolved = [...new Set([...batch, ...interactive, ...resident])]
 
     expect([...mapped].sort()).toEqual([...resolved].sort())
   })

@@ -23,7 +23,7 @@ Use the workflow tool ONLY when the user explicitly asks for a workflow or for l
 
 Use the ralph tool ONLY when the direct human explicitly asks for a Ralph loop or fresh-agent iterative execution. Each Ralph round starts a fresh child with no conversation seed and uses the shared workspace as durable memory. Completion and blockers are worker reports, not independent evaluation. Use same-session goal tools for ordinary long-running objectives, and plain subagents or workflows for bounded delegation and fan-out.
 
-Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and any final assistant message.
+Use subagent in the background by default. Start independent delegations together in one assistant message and continue useful work while they run. Set `run_in_background: false` only when your next action depends on that subagent's result. When a background run settles, the runtime sends you a notice containing its outcome and its result.
 
 ## Writing code for run_code
 
@@ -44,8 +44,8 @@ interface ToolArgsMap {
   bash: {
     /** The bash command to execute. */
     command: string;
-    /** Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: "ls" → "List files in current directory"; "git status" → "Show working tree status"; "npm install" → "Install package dependencies". */
-    description: string;
+    /** Optional. Clear, concise description of what this command does in active voice, 5-10 words (shown in the UI). Examples: "ls" → "List files in current directory"; "git status" → "Show working tree status"; "npm install" → "Install package dependencies". */
+    description?: string;
     /** Timeout in milliseconds. The executor applies its configured default and cap, and kills the command on expiry. */
     timeoutMs?: number;
     /** Working directory for this command. Defaults to the session workspace; a relative path is resolved against it. */
@@ -160,12 +160,14 @@ interface ToolArgsMap {
     /** Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access. */
     justification?: string;
   } & Record<string, JsonValue>;
-  /** Delegate a self-contained task to a subagent (a separate agent that works in its own context) to offload focused, independent work — research, a scoped implementation, an analysis — so it does not consume this conversation's context. The subagent returns its result, not its intermediate steps. Give it a complete, standalone prompt: it does not see this conversation. This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result. */
+  /** Delegate a self-contained task to a subagent (a separate agent that works in its own context) to offload focused, independent work — research, a scoped implementation, an analysis — so it does not consume this conversation's context. The subagent returns its result, not its intermediate steps. Give it a complete, standalone prompt: it does not see this conversation. This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and its result; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result. */
   subagent: {
     /** A short (3-5 word) description of the delegated task, for display. */
     description: string;
     /** The complete, self-contained task for the subagent. It does not share this conversation's context, so include everything it needs. */
     prompt: string;
+    /** The model the subagent runs on, named exactly as the deployment addresses it. It is reached through this subagent's own provider, so name a model that provider serves. Omit this to use the default, which is what every delegation runs on unless you choose otherwise. Applies to this call only. */
+    model?: string;
     /** Whether to run in the background and return a durable subagent id immediately. Defaults to true. Set false to wait for the result when your next action depends on it. */
     run_in_background?: boolean;
   } & Record<string, JsonValue>;
@@ -175,6 +177,8 @@ interface ToolArgsMap {
     description: string;
     /** The task for the subagent. It already sees this conversation's completed turns, so build on them freely and state only what is new. */
     prompt: string;
+    /** The model the subagent runs on, named exactly as the deployment addresses it. It is reached through this subagent's own provider, so name a model that provider serves. Omit this to use the default, which is what every delegation runs on unless you choose otherwise. Applies to this call only. */
+    model?: string;
   } & Record<string, JsonValue>;
   /** Record and update a structured task list for the current work. Send the ENTIRE list every call — it REPLACES the previous list (there are no partial updates, no per-item edits). Use it to plan multi-step work and show progress: add one todo per concrete step before you start. Mark every todo being actively worked on `in_progress` — several at once when work genuinely runs in parallel (e.g. concurrent subagents or background commands), one for sequential work; while work remains, at least one task should be `in_progress`. Mark a todo `completed` the moment it is done (do not batch completions), and allow no `in_progress` item only once all work is complete. Skip the list for trivial single-step tasks. Statuses: `pending` (not started), `in_progress` (being worked on now), `completed` (finished). */
   todo_write: {

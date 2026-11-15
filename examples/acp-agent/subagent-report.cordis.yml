@@ -1,0 +1,14 @@
+# The shipped `settlement` report default, which is what makes this scenario
+# authorable at all: the held report travels inside the child's own settlement
+# notice, so the parent has exactly one wake. The earlier `wakeup` default gave
+# this transcript two independent wakes with no single authored order, and the
+# overlay that used to pin `quiet` here existed only to dodge that. The fixture
+# below still holds the child until the parent's spawn turn has closed, so the
+# one wake opens its own turn rather than folding into the turn already running.
+- id: base
+  name: '@deepseek-ai/cordis-plugin-include'
+  config:
+    path: ./cordis.yml
+
+- id: report-fence
+  name: './tests/fixtures/subagent-report-fence.ts'

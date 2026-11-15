@@ -16,7 +16,7 @@ Status: implemented
 
 继续执行管理器自己投递这份记账，就在结束 Activation 的那笔 dispose 事务内部完成。
 
-当驻留 Activation 结算时，`notifySettlement()` 解析该 child 持久化的直接父级，并向它发送一条用户角色消息：先是父级可据以行动的一句结果说明，然后是 child 的最终 assistant 内容，或一句说明它没有产出内容。对每个调用方真正拿到过 id 的 child，投递都是无条件的。它不查询 child 是否上报过，也不保留任何可能让这项承诺变成有条件的记账——正是这种无条件性，才让 `tool-subagent` 能够承诺一条包含结局与可能存在的最终 assistant 消息的运行时通知。在第一条消息被接受之前就回滚的物化保持静默，因为调用方已被告知该 child 未建立。
+当驻留 Activation 结算时，`notifySettlement()` 解析该 child 持久化的直接父级，并向它发送一条用户角色消息：先是父级可据以行动的一句结果说明，然后是 child 的结果。当本 epoch 有 `settlement` 投递暂存的上报时，该结果就是这些上报；否则是 child 的最终 assistant 内容，或一句说明它没有产出内容（见[为何暂存的上报会替换收尾消息](2026-11-15-one-statement-when-a-continuable-child-finishes.md)）。对每个调用方真正拿到过 id 的 child，投递本身都是无条件的，并且不保留关于 child 是否用过某个本管理器并不拥有的通道的记账——正是这种无条件性，才让 `tool-subagent` 能够承诺一条包含结局与 child 结果的运行时通知。在第一条消息被接受之前就回滚的物化保持静默，因为调用方已被告知该 child 未建立。
 
 ### 来源信息
 
@@ -62,7 +62,7 @@ Status: implemented
 
 另有一个无密钥的 headless Loader 快照端到端覆盖用户可见路径。其重放父级省略 `run_in_background` 以覆盖可继续后台默认路径，从不调用 `list_agents`、`send_message` 或 Task 工具，消费管理器写入的 `subagent-settled` 通知，并给出最终答案。child 从不调用 `report`，因此该 transcript 不可能经由协作式上报路径通过。一个仅用于测试的 Loader 栅栏会把父级启动后的请求保持到真实管理器通知进入其 inbox 为止，从 transcript 中排除平台调度差异，但不会伪造该通知。
 
-`subagent-report` 还需要多做一步让步。在随附的唤醒上报默认值下，该场景有两个互相独立的父级唤醒——上报与结算——而第二个究竟是延长第一个的轮次还是另开一个轮次，是一枚真正的硬币，多次运行实测约为五五开。任何手写 transcript 都无法同时容纳两种顺序。因此它的 overlay 固定 `reportDelivery: quiet`，使结算成为唯一唤醒；另一个仅用于快照的 pre-step 栅栏会把 child 保持到父级启动轮次结束，使这次唤醒开启一个确定轮次并同时认领两条消息。唤醒上报默认值的覆盖则保留在 report 包自身的测试中。
+在上报还与通知分开调度的那段时间里，`subagent-report` 还需要多做一步让步。在当时随附的唤醒上报默认值下，该场景有两个互相独立的父级唤醒——上报与结算——而第二个究竟是延长第一个的轮次还是另开一个轮次，是一枚真正的硬币，多次运行实测约为五五开；任何手写 transcript 都无法同时容纳两种顺序，因此它的 overlay 固定 `reportDelivery: quiet`，使结算成为唯一唤醒。[`settlement` 上报默认值](2026-11-15-one-statement-when-a-continuable-child-finishes.md) 直接消除了第二次唤醒，于是该场景现在跑在随附默认值上，不再需要任何 overlay。那个仅用于快照的 pre-step 栅栏保留下来，把 child 保持到父级启动轮次结束，使这唯一一次唤醒开启属于它自己的轮次。`wakeup` 与 `quiet` 的覆盖则保留在 report 包自身的测试中。
 
 拒绝与中断两种措辞在单元测试中逐字钉死，而不进入重放 transcript：触发它们需要一个会拒绝的策略插件、或一次在 step 边界被栅栏卡住的取消，而无密钥组装本身并不携带这些；通知通路本身已由整体组装场景端到端钉住。
 

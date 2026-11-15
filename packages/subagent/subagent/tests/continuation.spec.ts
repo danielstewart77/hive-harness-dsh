@@ -1512,17 +1512,486 @@ describe('continuable review regressions', () => {
 })
 
 /** Every settlement notice this agent received, in order, as flat text. */
-function settlementNotices(agent: Agent): { sender: string; text: string; summary: string }[] {
+function settlementNotices(agent: Agent): { id: string; sender: string; text: string; summary: string }[] {
   const logged = agent.session.events.flatMap(event => event.type === 'user/message' ? [event.data] : [])
   return [...logged, ...agent.inbox.nextStep, ...agent.inbox.nextTurn].flatMap((message) => {
     if (message.source.kind !== 'subagent-settled') return []
     return [{
+      id: message.id,
       sender: message.source.senderSessionId,
       summary: message.source.summary,
       text: message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
     }]
   })
 }
+
+/** Every separately delivered report relay the parent holds or has logged. */
+function reportRelays(agent: Agent): { sender: string; text: string }[] {
+  const logged = agent.session.events.flatMap(event => event.type === 'user/message' ? [event.data] : [])
+  return [...logged, ...agent.inbox.nextStep, ...agent.inbox.nextTurn].flatMap((message) => {
+    if (message.source.kind !== 'subagent-report') return []
+    return [{
+      sender: message.source.senderSessionId,
+      text: message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
+    }]
+  })
+}
+
+describe('continuable held-report settlement', () => {
+  it('folds a held report into the one message the parent receives', async () => {
+    const { ctx, parent } = await setup([textResponse('the closing remark'), textResponse('parent ack')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(child, message('the real result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, started.childId)
+
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    // The whole point: one statement carrying the outcome and the result, and
+    // no separate relay restating it.
+    expect(reportRelays(parent)).toEqual([])
+    expect(settlementNotices(parent)[0]!.text).toBe(
+      `Background subagent ${started.childId} finished and will do no further work unless you send it more.`
+      + '\nIts report:\nthe real result',
+    )
+    // The closing remark the report supersedes is not restated.
+    expect(settlementNotices(parent)[0]!.text).not.toContain('the closing remark')
+    // The collapsed row stays the manager's own account, never the content.
+    expect(settlementNotices(parent)[0]!.summary).toBe(
+      `Background subagent ${started.childId} finished and will do no further work unless you send it more.`,
+    )
+  })
+
+  it('carries several held reports in the order the child made them', async () => {
+    const { ctx, parent } = await setup([textResponse('done'), textResponse('parent ack')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    for (const text of ['first finding', 'second finding', 'third finding']) {
+      await ctx.subagents.reportFrom(child, message(text), { delivery: 'settlement', signal: testSignal })
+    }
+    await waitNoActivation(ctx, started.childId)
+
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    expect(settlementNotices(parent)[0]!.text).toBe(
+      `Background subagent ${started.childId} finished and will do no further work unless you send it more.`
+      + '\nIts report 1 of 3:\nfirst finding'
+      + '\nIts report 2 of 3:\nsecond finding'
+      + '\nIts report 3 of 3:\nthird finding',
+    )
+  })
+
+  it('acknowledges a held report with the id of the message that delivers it', async () => {
+    const { ctx, parent } = await setup([textResponse('done'), textResponse('parent ack')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    const acknowledged = await ctx.subagents.reportFrom(child, message('the result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, started.childId)
+
+    // The id handed back to the child names the parent message that actually
+    // carries its report, so the acknowledgement is not a dangling identity.
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    expect(settlementNotices(parent)[0]!.id).toBe(acknowledged)
+  })
+
+  it('carries a held report from a child stopped before it finished', async () => {
+    const { ctx, parent } = await setup([maxTokensResponse('half an ans'), textResponse('parent ack')])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(child, message('what I had so far'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, started.childId)
+
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    // A ceiling must not be dressed up as a finish just because the child
+    // managed to report: the outcome line is still the true one.
+    expect(settlementNotices(parent)[0]!.text).toBe(
+      `Background subagent ${started.childId} ran out of room before it finished.`
+      + '\nIts report:\nwhat I had so far',
+    )
+  })
+
+  it('hands a held report over when the child stops but its own child has not', async () => {
+    const releaseGrandchild = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child done') },
+      { chunks: textResponse('grandchild'), gate: releaseGrandchild.promise },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    parkParent(ctx, parent)
+    // Observe delivery at the parent's inbox: a parked parent claims and
+    // discards what it is handed, so insertion is where the manager's decision
+    // is visible rather than the log it never commits.
+    const delivered: { kind: string; text: string; target: string }[] = []
+    ctx.on('agent/inbox/inserted', ({ agent, message: inserted }) => {
+      if (agent !== parent) return
+      delivered.push({
+        kind: inserted.source.kind,
+        text: inserted.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n'),
+        target: agent.inbox.nextTurn.some(queued => queued.id === inserted.id) ? 'next-turn' : 'other',
+      })
+    })
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const found = ctx.agents.get(started.childId)
+      expect(found).toBeDefined()
+      return found!
+    })
+    const grandchild = await ctx.subagents.startContinuable(startSpec(child))
+    await ctx.subagents.reportFrom(child, message('my answer'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await vi.waitFor(() => { expect(child.status).toBe('idle') }, { timeout: 5_000 })
+
+    // The child's own work is over, but owning a live grandchild keeps its
+    // Activation `waiting`, so no notice is coming. The hold must not outlive
+    // the child's own work — the parent gets the report through the ordinary
+    // relay rather than waiting on a subtree it is not blocked on.
+    await vi.waitFor(() => {
+      expect(delivered).toEqual([{
+        kind: 'subagent-report',
+        text: `Background subagent ${started.childId} reported:\nmy answer`,
+        // Waking, not quiet: `followup()` queues a next-TURN message, which is
+        // what makes a parked parent read it. A quiet injection would arrive in
+        // the inbox just the same and strand the result exactly as holding it
+        // would have — the stranding this flush exists to prevent.
+        target: 'next-turn',
+      }])
+    }, { timeout: 5_000 })
+
+    releaseGrandchild.resolve(undefined)
+    await waitNoActivation(ctx, grandchild.childId)
+    await waitNoActivation(ctx, started.childId)
+    // Flushed, not copied: the later notice carries the outcome and the child's
+    // closing message, never a second copy of the report already relayed.
+    await vi.waitFor(() => { expect(delivered).toHaveLength(2) })
+    expect(delivered[1]!.kind).toBe('subagent-settled')
+    expect(delivered[1]!.text).not.toContain('my answer')
+  })
+
+  it('starts a cold-resumed epoch with nothing held from the last one', async () => {
+    const { ctx, parent } = await setup([
+      textResponse('first closing'),
+      textResponse('second closing'),
+      textResponse('parent ack'),
+      textResponse('parent ack'),
+    ])
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const first = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(first, message('epoch one result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, started.childId)
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+
+    // A later message cold-resumes the child into a NEW Activation, which is
+    // where the hold lives. A hold keyed by durable child id instead would
+    // replay epoch one's result into epoch two's notice.
+    await followup(ctx, parent, started.childId, message('more work'))
+    const second = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(second, message('epoch two result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, started.childId)
+
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(2) })
+    expect(settlementNotices(parent)[1]!.text).toBe(
+      `Background subagent ${started.childId} finished and will do no further work unless you send it more.`
+      + '\nIts report:\nepoch two result',
+    )
+    expect(settlementNotices(parent)[1]!.text).not.toContain('epoch one result')
+    // Each epoch is acknowledged with its own notice identity.
+    expect(settlementNotices(parent)[0]!.id).not.toBe(settlementNotices(parent)[1]!.id)
+  })
+
+  it('delivers a report accepted after the child already stopped working', async () => {
+    const releaseGrandchild = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child done') },
+      { chunks: textResponse('grandchild'), gate: releaseGrandchild.promise },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    parkParent(ctx, parent)
+    const delivered: string[] = []
+    ctx.on('agent/inbox/inserted', ({ agent, message: inserted }) => {
+      if (agent === parent) delivered.push(inserted.source.kind)
+    })
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const found = ctx.agents.get(started.childId)
+      expect(found).toBeDefined()
+      return found!
+    })
+    const grandchild = await ctx.subagents.startContinuable(startSpec(child))
+    // Wait for the child's own turn to END before reporting. The settlement
+    // watcher has already made its quiescence observation by then and is
+    // parked on its poke, so nothing will look at the hold again on its own:
+    // without the poke the report sits there until the grandchild settles.
+    await vi.waitFor(() => { expect(child.status).toBe('idle') }, { timeout: 5_000 })
+    await ctx.subagents.reportFrom(child, message('late result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+
+    await vi.waitFor(() => {
+      expect(delivered).toEqual(['subagent-report'])
+    }, { timeout: 5_000 })
+    releaseGrandchild.resolve(undefined)
+    await waitNoActivation(ctx, grandchild.childId)
+    await waitNoActivation(ctx, started.childId)
+  })
+
+  it('keeps one child\'s held report out of another child\'s notice', async () => {
+    const { ctx, parent } = await setup([
+      textResponse('first closing'),
+      textResponse('second closing'),
+      textResponse('parent ack'),
+      textResponse('parent ack'),
+    ])
+    // Two reporting children live at the same time: a hold keyed by anything
+    // coarser than the Activation — one shared buffer, or a map on durable
+    // child id — delivers each child the other's result.
+    const first = await ctx.subagents.startContinuable(startSpec(parent))
+    const second = await ctx.subagents.startContinuable(startSpec(parent))
+    const firstChild = await vi.waitFor(() => {
+      const live = ctx.agents.get(first.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    const secondChild = await vi.waitFor(() => {
+      const live = ctx.agents.get(second.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(firstChild, message('result of the first'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await ctx.subagents.reportFrom(secondChild, message('result of the second'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await waitNoActivation(ctx, first.childId)
+    await waitNoActivation(ctx, second.childId)
+
+    await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(2) }, { timeout: 5_000 })
+    const byChild = new Map(settlementNotices(parent).map(notice => [notice.sender, notice.text]))
+    expect(byChild.get(first.childId)).toContain('Its report:\nresult of the first')
+    expect(byChild.get(first.childId)).not.toContain('result of the second')
+    expect(byChild.get(second.childId)).toContain('Its report:\nresult of the second')
+    expect(byChild.get(second.childId)).not.toContain('result of the first')
+  })
+
+  it('says a held report reached a parent whose own teardown had begun', async () => {
+    const hold = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([{ chunks: textResponse('interrupted'), gate: hold.promise }])
+    const { ctx } = await setupWith(adapter)
+    const warnings: string[] = []
+    ctx.logger.warn = (text: string) => { warnings.push(text) }
+    const host = await ctx.agents.create({
+      sessionId: SessionId('closing-parent-with-report'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const started = await ctx.subagents.startContinuable(startSpec(host.agent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(child, message('result nobody will read'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+
+    // Teardown: the notice is injected rather than woken, and the parent's own
+    // disposal then clears what it never claimed. The outcome line is cheap to
+    // lose; the result riding inside it is not, so it is logged.
+    const drained = ctx.subagents.drainContinuableDescendants([host.agent])
+    hold.resolve(undefined)
+    await drained
+
+    expect(settlementNotices(host.agent)[0]!.text).toContain('Its report:\nresult nobody will read')
+    expect(warnings.some(warning => warning.includes('held report(s) into a parent whose own teardown')))
+      .toBe(true)
+    await host.dispose()
+  })
+
+  it('names a held report its parent had already left before the flush', async () => {
+    const releaseChild = Promise.withResolvers<undefined>()
+    const releaseGrandchild = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child done'), gate: releaseChild.promise },
+      { chunks: textResponse('grandchild'), gate: releaseGrandchild.promise },
+    ])
+    const { ctx } = await setupWith(adapter)
+    const warnings: string[] = []
+    ctx.logger.warn = (text: string) => { warnings.push(text) }
+    const host = await ctx.agents.create({
+      sessionId: SessionId('vanishing-parent'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const started = await ctx.subagents.startContinuable(startSpec(host.agent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    // A live grandchild keeps the child `waiting`, so the flush — not the
+    // notice — is what will look at the hold.
+    const grandchild = await ctx.subagents.startContinuable(startSpec(child))
+    await ctx.subagents.reportFrom(child, message('orphaned result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    // The parent leaves the registry while the child is still working, so by
+    // the time the flush runs there is nobody to hand the report to.
+    await host.dispose()
+    releaseChild.resolve(undefined)
+
+    await vi.waitFor(() => {
+      expect(warnings.some(warning => warning.includes('its parent never became'))).toBe(true)
+    }, { timeout: 5_000 })
+    releaseGrandchild.resolve(undefined)
+    await waitNoActivation(ctx, grandchild.childId)
+  })
+
+  it('logs a refused held report without stranding the rest of the flush', async () => {
+    const releaseGrandchild = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([
+      { chunks: textResponse('child done') },
+      { chunks: textResponse('grandchild'), gate: releaseGrandchild.promise },
+    ])
+    const { ctx, parent } = await setupWith(adapter)
+    parkParent(ctx, parent)
+    const warnings: string[] = []
+    ctx.logger.warn = (text: string) => { warnings.push(text) }
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const found = ctx.agents.get(started.childId)
+      expect(found).toBeDefined()
+      return found!
+    })
+    const grandchild = await ctx.subagents.startContinuable(startSpec(child))
+    await ctx.subagents.reportFrom(child, message('first held'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    await ctx.subagents.reportFrom(child, message('second held'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    // The first send is refused. The flush must log it and carry on rather than
+    // abandoning the reports behind it.
+    let sends = 0
+    const realFollowup = parent.followup.bind(parent)
+    parent.followup = (queued) => {
+      sends += 1
+      if (sends === 1) throw new Error('inbox refused')
+      realFollowup(queued)
+    }
+
+    await vi.waitFor(() => {
+      expect(warnings.some(warning => warning.includes('held report was not delivered'))).toBe(true)
+      expect(sends).toBe(2)
+    }, { timeout: 5_000 })
+    releaseGrandchild.resolve(undefined)
+    await waitNoActivation(ctx, grandchild.childId)
+  })
+
+  it('names the held reports lost when the notice\'s own send is refused', async () => {
+    const { ctx, parent } = await setup([textResponse('done')])
+    const warnings: string[] = []
+    ctx.logger.warn = (text: string) => { warnings.push(text) }
+    const started = await ctx.subagents.startContinuable(startSpec(parent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(child, message('the result'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+    // A live parent that refuses the send. Clearing the hold before attempting
+    // delivery would leave this warning saying only that a notice failed,
+    // never that a result went with it.
+    const refuse = () => { throw new Error('inbox refused') }
+    parent.followup = refuse
+    parent.steer = refuse
+    await waitNoActivation(ctx, started.childId)
+
+    await vi.waitFor(() => {
+      expect(warnings.some(warning => warning.includes('lost 1 held report(s)'))).toBe(true)
+    }, { timeout: 5_000 })
+  })
+
+  it('names the held reports lost with a notice its parent never received', async () => {
+    const releaseChild = Promise.withResolvers<undefined>()
+    const adapter = new GatedAdapter([{ chunks: textResponse('answer'), gate: releaseChild.promise }])
+    const { ctx } = await setupWith(adapter)
+    const warnings: string[] = []
+    ctx.logger.warn = (text: string) => { warnings.push(text) }
+    const host = await ctx.agents.create({
+      sessionId: SessionId('disposable-parent'),
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const started = await ctx.subagents.startContinuable(startSpec(host.agent))
+    const child = await vi.waitFor(() => {
+      const live = ctx.agents.get(started.childId)
+      expect(live).toBeDefined()
+      return live!
+    })
+    await ctx.subagents.reportFrom(child, message('nobody will read this'), {
+      delivery: 'settlement',
+      signal: testSignal,
+    })
+
+    // Take the parent out of the registry before the child settles, so the
+    // notice that would have carried the report cannot be delivered at all.
+    releaseChild.resolve(undefined)
+    await host.dispose()
+    await waitNoActivation(ctx, started.childId)
+
+    // A lost result is logged as a lost result, not swallowed inside a message
+    // about an undelivered notice — or, worse, silently.
+    await vi.waitFor(() => {
+      expect(warnings.some(warning => warning.includes('lost 1 held report(s)'))).toBe(true)
+    }, { timeout: 5_000 })
+  })
+})
 
 describe('continuable settlement delivery', () => {
   it('tells the parent what the child finished with, without being asked', async () => {
@@ -1561,6 +2030,15 @@ describe('continuable settlement delivery', () => {
     // description can promise it; bookkeeping "did it report?" would make the
     // promise conditional on a channel this manager does not own.
     await vi.waitFor(() => { expect(settlementNotices(parent)).toHaveLength(1) })
+    // A separately scheduled report does NOT take the closing message out of
+    // the notice. Only `settlement` delivery replaces it, and only because the
+    // report it replaces it with travels in the same message. Suppressing it
+    // here would cost a deployment that chose immediate delivery the one copy
+    // of a final answer the child never got round to reporting.
+    expect(settlementNotices(parent)[0]!.text).toBe(
+      `Background subagent ${started.childId} finished and will do no further work unless you send it more.`
+      + '\nIts closing message:\nthe answer',
+    )
   })
 
   it('delivers the terminal reason when the child never had a chance to report', async () => {

@@ -108,7 +108,11 @@ const SCENARIOS: SdkScenario[] = [
     configs: { live: minimalLiveConfig, replay: minimalReplayConfig },
     environment: { DSH_SYSTEM_PROMPT: MINIMAL_SYSTEM_PROMPT },
     expectedFiles: { 'note.txt': 'target:\n\tnew\n' },
-    expectedTools: { bash: ['command'], str_replace_editor: ['command', 'path'] },
+    // `str_replace_editor` declares no schema-required parameter: `command` is
+    // inferred from the other arguments when omitted or unrecognized, and the
+    // path arrives under either `path` or `file_path`. A missing path is still
+    // refused, at execution rather than in the schema.
+    expectedTools: { bash: ['command'], str_replace_editor: [] },
     expectedSystem: MINIMAL_SYSTEM_PROMPT,
     expectedToolDescriptions: { bash: MINIMAL_BASH_DESCRIPTION },
     runtimeContext: false,
