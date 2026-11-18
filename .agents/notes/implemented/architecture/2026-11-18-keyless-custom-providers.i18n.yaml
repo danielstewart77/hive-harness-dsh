@@ -1,0 +1,6 @@
+# Bilingual-pair consistency record (docs/i18n/README.md): the git blob hash of each
+# side as of the last confirmed-consistent state. Both languages carry equal authority;
+# after editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-18-keyless-custom-providers.md
+2026-11-18-keyless-custom-providers.md: c8b4ec9d16c7fddaca7e531159726e66cc2f7705
+2026-11-18-keyless-custom-providers.zh.md: 1b46afdadc554081da6b783aff1118d5be8a5046
