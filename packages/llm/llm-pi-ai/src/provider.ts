@@ -20,7 +20,7 @@
  */
 
 import { createProvider } from '@earendil-works/pi-ai'
-import type { Api, ApiKeyAuth, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
+import type { Api, ApiKeyAuth, Model, Provider, ProviderStreams, StreamOptions } from '@earendil-works/pi-ai'
 import { anthropicMessagesApi } from '@earendil-works/pi-ai/api/anthropic-messages.lazy'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { openAIResponsesApi } from '@earendil-works/pi-ai/api/openai-responses.lazy'
@@ -68,9 +68,8 @@ export function supportedProtocols(): readonly string[] {
  * missing key here is not this layer's failure: a named-but-unresolvable
  * reference has already failed the request with `MISSING_CREDENTIAL`, and a
  * route naming no credential at all is deliberately unauthenticated. Reporting
- * it as configured hands the decision to the protocol, which is where the
- * requirement actually lives — pi-ai's OpenAI-compatible implementation, for
- * one, still insists on a key or an `Authorization` header of its own.
+ * it as configured permits keyless custom routes to initialize the SDK
+ * without sending an authentication header. Catalog routes retain native auth.
  * @param name - display name used as the resolution's status label.
  * @returns the api-key auth for a harness-authenticated route.
  */
@@ -158,6 +157,29 @@ function reuseCatalogProvider(base: Provider, spec: ProviderSpec): Provider {
   }
 }
 
+/** SDK initialization for an explicitly keyless custom route; no key is sent. */
+function unauthenticatedOverrides(options: StreamOptions | undefined): Pick<StreamOptions, 'apiKey' | 'headers'> {
+  if (options?.apiKey !== undefined) return {}
+  const headers = options?.headers ?? {}
+  if (Object.entries(headers).some(([name, value]) =>
+    ['authorization', 'x-api-key', 'cf-aig-authorization'].includes(name.toLowerCase())
+    && value !== null && value.trim().length > 0)) return {}
+  // The SDK requires a nonempty constructor key even for an unauthenticated
+  // server. Null overrides remove its default authentication headers before
+  // sending; this initialization value never reaches the endpoint.
+  return { apiKey: 'unused', headers: { ...headers, Authorization: null, 'x-api-key': null } }
+}
+
+/** A custom route without a credential reference sends unauthenticated requests. */
+function keylessProvider(base: Provider): Provider {
+  return {
+    ...base,
+    stream: (model, context, options) => base.stream(model, context, Object.assign({}, options, unauthenticatedOverrides(options))),
+    streamSimple: (model, context, options) =>
+      base.streamSimple(model, context, Object.assign({}, options, unauthenticatedOverrides(options))),
+  }
+}
+
 /**
  * Build the pi-ai provider for one resolved route.
  * @param spec - the resolved route facts.
@@ -181,7 +203,7 @@ export function buildProvider(spec: ProviderSpec): Provider {
       + ` supported protocols are ${supportedProtocols().join(', ')}`,
     )
   }
-  return createProvider({
+  const provider = createProvider({
     id: spec.provider,
     name: spec.displayName,
     ...spec.baseURL === undefined ? {} : { baseUrl: spec.baseURL },
@@ -189,4 +211,5 @@ export function buildProvider(spec: ProviderSpec): Provider {
     models: spec.models,
     api: factory(),
   })
+  return catalog === undefined && !spec.namesCredential ? keylessProvider(provider) : provider
 }

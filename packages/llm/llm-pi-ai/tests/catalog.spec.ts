@@ -331,14 +331,8 @@ describe('hand-declared providers', () => {
     expect(() => buildProvider(spec)).toThrow(/cannot serve; supported protocols are/)
   })
 
-  it('leaves an unauthenticated route to its protocol rather than inventing a credential', async () => {
+  it('sends a custom route without a credential unauthenticated', async () => {
     const server = await mockServer([{ events: textEvents }])
-    // Naming no credential is the deliberately unauthenticated posture — a
-    // named reference that resolved to nothing would have failed with
-    // MISSING_CREDENTIAL long before this point. The route resolves as
-    // configured and the protocol decides: pi-ai's OpenAI-compatible
-    // implementation wants a key or an Authorization header of its own, and
-    // says so instead of the harness guessing a placeholder.
     const ctx = await harness({
       providers: {
         'local-llm': {
@@ -350,11 +344,10 @@ describe('hand-declared providers', () => {
     })
 
     const result = await assemble(ctx, { provider: 'local-llm', model: 'qwen3', messages: [] })
-    expect(result.finish).toMatchObject({
-      kind: 'error',
-      failure: { message: 'No API key for provider: local-llm' },
-    })
-    expect(server.requests).toHaveLength(0)
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(server.requests).toHaveLength(1)
+    expect(server.headers[0]?.authorization).toBeUndefined()
+    expect(server.headers[0]?.['x-api-key']).toBeUndefined()
   })
 
   it('authenticates an unauthenticated route through a configured header', async () => {
