@@ -147,6 +147,22 @@ export function completedMessage(event: SessionEvent): string | undefined {
 }
 
 /**
+ * The line announcing a tool call, or undefined for any other event.
+ *
+ * A mind that works without speaking - forty steps of commands and not a word
+ * of prose - writes no delta and no message, so everything listening on this
+ * stream hears a silence indistinguishable from a hung turn (Daniel,
+ * 2026-11-22: a working build was read as dead and killed). One line per call
+ * is the evidence that the turn is moving. It names the call and the tool and
+ * nothing else: the arguments are where a command carries a credential, and
+ * nothing reading this line needs them.
+ */
+export function toolLine(event: SessionEvent): Record<string, unknown> | undefined {
+  if (event.type !== 'tool/call') return undefined
+  return { tool: { id: event.data.callId, name: event.data.name } }
+}
+
+/**
  * Hold one conversation open and answer turns until stdin ends.
  * @param ctx - plugin context carrying the agent registry, default model and sessions.
  * @param config - the conversation identity and whether to create or continue it.
@@ -231,6 +247,11 @@ export async function runResident(
     if (session.id !== agent.session.id) return
     if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
       io.write({ delta: { kind: 'text', text: event.data.chunk.text } })
+      return
+    }
+    const call = toolLine(event)
+    if (call !== undefined) {
+      io.write(call)
       return
     }
     const text = completedMessage(event)
