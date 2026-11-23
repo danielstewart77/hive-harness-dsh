@@ -6,7 +6,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import { SessionId } from '@deepseek-ai/dsh-session'
 
 import {
-  completedMessage, isTurnRequest, messageLine, parseTurnRequest, runResident,
+  completedMessage, isTurnRequest, messageLine, parseTurnRequest, runResident, toolLine,
 } from '../src/resident.ts'
 import type { ResidentIo } from '../src/resident.ts'
 import { bench } from './support.ts'
@@ -209,6 +209,40 @@ describe('the resident loop', () => {
 
     const late = kind(out.written, 'message').filter(m => m['unsolicited'] === true)
     expect(late.map(m => m['message'])).toEqual(['the second delegate came back refused'])
+  })
+
+  it('announces each tool call of a turn that says nothing, without its arguments', async () => {
+    // A mind that only works writes no prose, and a stream with nothing on it
+    // is what a hung turn looks like from outside.
+    const silentTurn = (session: never, message: never, turn: number) => {
+      const live = session as unknown as {
+        append(type: string, data: unknown, options?: unknown): void
+      }
+      live.append('turn/start', { turn })
+      live.append('step/start', { turn, step: 1 })
+      live.append('user/message', message, { surfaceOp: 'append' })
+      live.append('tool/call', {
+        turn, step: 1, callId: 'call-a', name: 'bash', arguments: '{"command":"export KEY=hunter2"}',
+      })
+      live.append('tool/result', {
+        turn,
+        step: 1,
+        message: { role: 'tool', content: [], source: { kind: 'tool', callId: 'call-a' } },
+      }, { surfaceOp: 'append' })
+      live.append('step/end', { turn, step: 1 })
+      live.append('turn/end', { turn, reason: { kind: 'completed' } })
+    }
+    const harness = await bench(silentTurn as never)
+    const out = capture()
+    const stdin = pipe()
+    stdin.push('{"id":"t1","turn":"do the work"}')
+    stdin.end()
+
+    await runResident(harness.ctx, { sessionId: 'conv-resident-silent', mode: 'create' },
+      { ...out.io, lines: stdin.lines } as ResidentIo)
+
+    expect(kind(out.written, 'tool')).toEqual([{ tool: { id: 'call-a', name: 'bash' } }])
+    expect(JSON.stringify(out.written)).not.toContain('hunter2')
   })
 
   it('reports a turn whose tool call was refused under the code that says so', async () => {
