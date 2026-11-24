@@ -55,6 +55,16 @@
         # declared anything about. An image the model cannot take is refused
         # where the knowledge is, at the endpoint.
         defaultInput: [text, image]
+        # How hard every model on this route is asked to think when a request
+        # names no effort of its own, which is every request this harness
+        # makes: the mind's and its sub-agents'. The mind's adapter sets it
+        # from the conversation's effort, and leaves it unset when the
+        # conversation names none, so the model keeps its own default. Until
+        # 2026-11-24 nothing set it: a sub-agent reviewing a plan thought for
+        # 550,000 hidden tokens in seventy-five minutes. Sent on the chat wire
+        # as `reasoning_effort`, which the proxy turns into the model's own
+        # form.
+        reasoning: !!js process.env.DSH_REASONING_EFFORT || undefined
 
 # The conversation's opening model, and nothing more: the gateway resolves it
 # per session from the mind's broker row, and every call inside the turn may
