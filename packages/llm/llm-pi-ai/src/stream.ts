@@ -112,6 +112,11 @@ function classifyPiAiError(message: string): string {
   if (/\b429\b|rate.?limit/i.test(message)) return 'RATE_LIMIT'
   if (/\b400\b|invalid.?request/i.test(message)) return 'INVALID_REQUEST'
   if (/\b5\d\d\b/.test(message)) return 'SERVER'
+  // A provider too busy to answer says so in a word and often with no status
+  // beside it: Anthropic's `overloaded_error` arrives through a proxy's chat
+  // route as the bare message `Overloaded`. Unclassified, it was not retried,
+  // and on 2026-11-24 one such answer ended a build three hours in.
+  if (/\boverloaded\b/i.test(message)) return 'SERVER'
   if (/\btime(?:d)?\s*out\b|timeout/i.test(message)) return 'TIMEOUT'
   // A stream truncated before the provider's terminal event: each pi-ai provider
   // throws its own wording when the wire closes mid-response without a terminal

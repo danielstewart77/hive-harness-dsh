@@ -65,6 +65,22 @@
         # as `reasoning_effort`, which the proxy turns into the model's own
         # form.
         reasoning: !!js process.env.DSH_REASONING_EFFORT || undefined
+        # A model request that fails for a passing reason is tried again:
+        # three more times, waiting about four, eight and sixteen seconds
+        # (Daniel, 2026-11-25, after one `Overloaded` ended a build three
+        # hours in). The codes are the passing ones, plus the unclassified
+        # failure, because an error nobody has named yet is likelier a blip
+        # than a verdict. A refused credential, a spent quota and a
+        # malformed request are not retried: the same request fails the same
+        # way.
+        retryPolicy:
+          mode: normal
+          maxRetries: 3
+          retryableCodes: [EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT, PI_AI_ERROR]
+          backoff:
+            initialDelayMs: 4000
+            maxDelayMs: 30000
+            jitterRatio: 0.2
 
 # The conversation's opening model, and nothing more: the gateway resolves it
 # per session from the mind's broker row, and every call inside the turn may

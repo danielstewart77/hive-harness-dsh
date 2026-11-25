@@ -244,7 +244,16 @@ export async function runResident(
     // tagged with an ancestor to events dispatched to a descendant key, and an
     // in-process subagent is created from this agent's context — so without
     // this a delegate's prose streams out in the mind's own voice.
-    if (session.id !== agent.session.id) return
+    if (session.id !== agent.session.id) {
+      // Its tool calls are announced all the same. They are the only sign
+      // that a mind waiting on a delegate is working: Daniel, 2026-11-25, a
+      // builder forty-five calls into a story while its conversation read
+      // as idle to the gateway, the chief of staff and the chart, because
+      // nothing of a delegate's left this process.
+      const delegated = toolLine(event)
+      if (delegated !== undefined) io.write(delegated)
+      return
+    }
     if (event.type === 'assistant/chunk' && event.data.chunk.type === 'text-delta') {
       io.write({ delta: { kind: 'text', text: event.data.chunk.text } })
       return
