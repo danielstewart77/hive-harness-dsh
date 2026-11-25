@@ -245,6 +245,35 @@ describe('the resident loop', () => {
     expect(JSON.stringify(out.written)).not.toContain('hunter2')
   })
 
+  it('announces a delegate\'s tool calls and none of its prose', async () => {
+    // Daniel, 2026-11-25: a builder forty-five calls into a story while the
+    // conversation that sent it read as idle everywhere, because nothing a
+    // delegate did left this process.
+    const harness = await bench()
+    const out = capture()
+    const stdin = pipe()
+    const running = runResident(
+      harness.ctx, { sessionId: 'conv-resident-parent', mode: 'create' },
+      { ...out.io, lines: stdin.lines } as ResidentIo,
+    )
+    stdin.push('{"id":"t1","turn":"dispatch a builder"}')
+    while (reports(out.written).length === 0) await new Promise(r => setTimeout(r, 5))
+    const before = out.written.length
+    const delegate = harness.sessions().create(SessionId('conv-resident-delegate')) as unknown as {
+      append(type: string, data: unknown, options?: unknown): void
+    }
+    delegate.append('turn/start', { turn: 1 })
+    delegate.append('tool/call', {
+      turn: 1, step: 1, callId: 'call-d', name: 'bash', arguments: '{"command":"export KEY=hunter2"}',
+    })
+    speakUnprompted(delegate as never, 'the delegate thinking aloud', 2)
+    await new Promise(r => setTimeout(r, 5))
+    stdin.end()
+    await running
+
+    expect(out.written.slice(before)).toEqual([{ tool: { id: 'call-d', name: 'bash' } }])
+  })
+
   it('reports a turn whose tool call was refused under the code that says so', async () => {
     // A mind under test is measured on its tool traffic, and a resident
     // process that ignored the flag would exempt every chat turn from the
